@@ -240,13 +240,47 @@ def validate_config() -> None:
     if HEALTH_CHECK_MODE not in {"tcp", "minecraft_status"}:
         raise ValueError("HEALTH_CHECK_MODE muss 'tcp' oder 'minecraft_status' sein.")
 
-    if LISTEN_HOST in {"127.0.0.1", "localhost"}:
-        if (MAIN_HOST, MAIN_PORT) == (LISTEN_HOST, LISTEN_PORT):
-            raise ValueError("MAIN zeigt auf den Proxy-Listener. Das erzeugt eine Proxy-Schleife.")
-        if (FALLBACK_HOST, FALLBACK_PORT) == (LISTEN_HOST, LISTEN_PORT):
+    def _normalize_host(host: str) -> str:
+        return host.strip().lower()
+
+    loopback_hosts_v4 = {"127.0.0.1", "localhost"}
+    loopback_or_any_v4 = {"127.0.0.1", "localhost", "0.0.0.0", "::1"}
+    loopback_or_any_v6 = {"::1", "localhost", "::"}
+
+    listen_host = _normalize_host(LISTEN_HOST)
+
+    def _validate_loop(name: str, target_host: str, target_port: int) -> None:
+        normalized_target_host = _normalize_host(target_host)
+
+        if (normalized_target_host, target_port) == (listen_host, LISTEN_PORT):
             raise ValueError(
-                "FALLBACK zeigt auf den Proxy-Listener. Das erzeugt eine Proxy-Schleife."
+                f"{name} zeigt exakt auf den Proxy-Listener ({LISTEN_HOST}:{LISTEN_PORT}). "
+                "Das erzeugt eine Proxy-Schleife."
             )
+
+        if target_port != LISTEN_PORT:
+            return
+
+        if listen_host in loopback_hosts_v4 and normalized_target_host in loopback_hosts_v4:
+            raise ValueError(
+                f"{name} nutzt denselben Port wie der Listener und zeigt auf Loopback "
+                f"({target_host}:{target_port}). Das erzeugt wahrscheinlich eine Proxy-Schleife."
+            )
+
+        if listen_host == "0.0.0.0" and normalized_target_host in loopback_or_any_v4:
+            raise ValueError(
+                f"{name} nutzt denselben Port wie LISTEN ({LISTEN_PORT}) bei LISTEN_HOST=0.0.0.0 "
+                f"und Zielhost={target_host}. Das erzeugt wahrscheinlich eine Proxy-Schleife."
+            )
+
+        if listen_host == "::" and normalized_target_host in loopback_or_any_v6:
+            raise ValueError(
+                f"{name} nutzt denselben Port wie LISTEN ({LISTEN_PORT}) bei LISTEN_HOST=:: "
+                f"und Zielhost={target_host}. Das erzeugt wahrscheinlich eine Proxy-Schleife."
+            )
+
+    _validate_loop("MAIN", MAIN_HOST, MAIN_PORT)
+    _validate_loop("FALLBACK", FALLBACK_HOST, FALLBACK_PORT)
 
 
 async def health_loop(stop_event: asyncio.Event) -> None:

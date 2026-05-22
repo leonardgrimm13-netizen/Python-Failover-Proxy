@@ -66,17 +66,50 @@ class TargetTests(unittest.TestCase):
 
 
 class ConfigValidationTests(unittest.TestCase):
+    def setUp(self):
+        self.old_values = {
+            "LISTEN_HOST": m.LISTEN_HOST,
+            "LISTEN_PORT": m.LISTEN_PORT,
+            "MAIN_HOST": m.MAIN_HOST,
+            "MAIN_PORT": m.MAIN_PORT,
+            "FALLBACK_HOST": m.FALLBACK_HOST,
+            "FALLBACK_PORT": m.FALLBACK_PORT,
+            "HEALTH_CHECK_MODE": m.HEALTH_CHECK_MODE,
+        }
+
+    def tearDown(self):
+        for key, value in self.old_values.items():
+            setattr(m, key, value)
+
     def test_validate_config_ok(self):
+        m.LISTEN_HOST = "0.0.0.0"
+        m.LISTEN_PORT = 25565
+        m.MAIN_HOST = "127.0.0.1"
+        m.MAIN_PORT = 25567
+        m.FALLBACK_HOST = "127.0.0.1"
+        m.FALLBACK_PORT = 25566
         m.validate_config()
 
     def test_invalid_health_check_mode(self):
-        old = m.HEALTH_CHECK_MODE
-        try:
-            m.HEALTH_CHECK_MODE = "invalid"
-            with self.assertRaises(ValueError):
-                m.validate_config()
-        finally:
-            m.HEALTH_CHECK_MODE = old
+        m.HEALTH_CHECK_MODE = "invalid"
+        with self.assertRaises(ValueError):
+            m.validate_config()
+
+    def test_loop_detect_listen_any_to_main_loopback_same_port(self):
+        m.LISTEN_HOST = "0.0.0.0"
+        m.LISTEN_PORT = 25565
+        m.MAIN_HOST = "127.0.0.1"
+        m.MAIN_PORT = 25565
+        with self.assertRaises(ValueError):
+            m.validate_config()
+
+    def test_loop_detect_listen_any_to_fallback_localhost_same_port(self):
+        m.LISTEN_HOST = "0.0.0.0"
+        m.LISTEN_PORT = 25565
+        m.FALLBACK_HOST = "localhost"
+        m.FALLBACK_PORT = 25565
+        with self.assertRaises(ValueError):
+            m.validate_config()
 
 
 if __name__ == "__main__":
