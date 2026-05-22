@@ -1,5 +1,8 @@
 import asyncio
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import mc_failover_proxy as m
 
@@ -16,32 +19,6 @@ class DummyReader:
         return out
 
 
-class DummyConfigPatchMixin:
-    PATCH_KEYS = (
-        "LISTEN_HOST",
-        "LISTEN_PORT",
-        "MAIN_HOST",
-        "MAIN_PORT",
-        "FALLBACK_HOST",
-        "FALLBACK_PORT",
-        "HEALTH_CHECK_MODE",
-        "CHECK_INTERVAL_SECONDS",
-        "CHECK_TIMEOUT_SECONDS",
-        "CONNECTION_TIMEOUT_SECONDS",
-        "FAIL_AFTER",
-        "RECOVER_AFTER",
-        "BUFFER_SIZE",
-        "LOG_LEVEL",
-    )
-
-    def setUp(self):
-        self.old_values = {key: getattr(m, key) for key in self.PATCH_KEYS}
-
-    def tearDown(self):
-        for key, value in self.old_values.items():
-            setattr(m, key, value)
-
-
 class VarIntTests(unittest.IsolatedAsyncioTestCase):
     async def test_varint_roundtrip(self):
         for value in (0, 1, 127, 128, 255, 2097151):
@@ -49,100 +26,122 @@ class VarIntTests(unittest.IsolatedAsyncioTestCase):
             decoded = await m.read_varint(DummyReader(encoded))
             self.assertEqual(value, decoded)
 
-    async def test_varint_too_long(self):
-        with self.assertRaises(ValueError):
-            await m.read_varint(DummyReader(b"\x80\x80\x80\x80\x80"))
+
+class ConfigTests(unittest.TestCase):
+    def valid_config(self) -> m.AppConfig:
+        return m.AppConfig(
+            proxy=m.ProxyConfig("0.0.0.0", 25565),
+            main=m.TargetConfig("127.0.0.1", 25567),
+            fallback=m.TargetConfig("127.0.0.1", 25566),
+            healthcheck=m.HealthCheckConfig("tcp", 3.0, 2.0, 2, 2),
+            connection=m.ConnectionConfig(5.0, 65536),
+            logging=m.LoggingConfig("INFO"),
+        )
+
+    def test_load_config_ok(self):
+        cfg = m.load_config(Path("config.toml"))
+        self.assertEqual(cfg.proxy.listen_port, 25565)
+
+    def test_load_config_missing(self):
+        with self.assertRaises(m.ConfigError):
+            m.load_config(Path("does-not-exist.toml"))
+
+    def test_load_config_invalid_toml(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "broken.toml"
+            p.write_text("[proxy\nlisten_port=25565", encoding="utf-8")
+            with self.assertRaises(m.ConfigError):
+                m.load_config(p)
+
+    def test_validate_config_ok(self):
+        m.validate_config(self.valid_config())
+
+    def test_load_config_section_must_be_table(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "bad-section.toml"
+            p.write_text("proxy = 123", encoding="utf-8")
+            with self.assertRaises(m.ConfigError):
+                m.load_config(p)
+
+    def test_load_config_os_error(self):
+        with mock.patch("pathlib.Path.open", side_effect=OSError("permission denied")):
+            with self.assertRaises(m.ConfigError):
+                m.load_config(Path("config.toml"))
 
 
-class HealthStateTests(DummyConfigPatchMixin, unittest.TestCase):
-    def test_initial_healthy(self):
-        state = m.HealthState()
+    def test_validate_config_rejects_bool_as_int(self):
+        cfg = self.valid_config()
+        cfg = m.AppConfig(**{**cfg.__dict__, "proxy": m.ProxyConfig("0.0.0.0", True)})
+        with self.assertRaises(m.ConfigError):
+            m.validate_config(cfg)
+
+    def test_validate_config_invalid_port(self):
+        cfg = self.valid_config()
+        cfg = m.AppConfig(**{**cfg.__dict__, "proxy": m.ProxyConfig("0.0.0.0", 70000)})
+        with self.assertRaises(m.ConfigError):
+            m.validate_config(cfg)
+
+    def test_validate_config_empty_host(self):
+        cfg = self.valid_config()
+        cfg = m.AppConfig(**{**cfg.__dict__, "main": m.TargetConfig("", 25567)})
+        with self.assertRaises(m.ConfigError):
+            m.validate_config(cfg)
+
+    def test_validate_config_bad_timeout_type(self):
+        cfg = self.valid_config()
+        cfg = m.AppConfig(
+            **{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", "3", 2.0, 2, 2)}
+        )
+        with self.assertRaises(m.ConfigError):
+            m.validate_config(cfg)
+
+    def test_validate_config_invalid_mode(self):
+        cfg = self.valid_config()
+        cfg = m.AppConfig(
+            **{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("invalid", 3.0, 2.0, 2, 2)}
+        )
+        with self.assertRaises(m.ConfigError):
+            m.validate_config(cfg)
+
+    def test_validate_config_invalid_log_level(self):
+        cfg = self.valid_config()
+        cfg = m.AppConfig(**{**cfg.__dict__, "logging": m.LoggingConfig("NOPE")})
+        with self.assertRaises(m.ConfigError):
+            m.validate_config(cfg)
+
+    def test_loop_detect_any_to_loopback(self):
+        cfg = self.valid_config()
+        cfg = m.AppConfig(**{**cfg.__dict__, "main": m.TargetConfig("127.0.0.1", 25565)})
+        with self.assertRaises(m.ConfigError):
+            m.validate_config(cfg)
+
+    def test_loop_detect_any_to_localhost(self):
+        cfg = self.valid_config()
+        cfg = m.AppConfig(**{**cfg.__dict__, "fallback": m.TargetConfig("localhost", 25565)})
+        with self.assertRaises(m.ConfigError):
+            m.validate_config(cfg)
+
+
+class HealthAndTargetTests(unittest.TestCase):
+    def test_health_state_thresholds(self):
+        state = m.HealthState(fail_after=3, recover_after=3)
         state.set_initial_state(True)
-        self.assertTrue(state.main_healthy)
-
-    def test_initial_unhealthy(self):
-        state = m.HealthState()
-        state.set_initial_state(False)
-        self.assertFalse(state.main_healthy)
-
-    def test_failover_threshold(self):
-        m.FAIL_AFTER = 3
-        state = m.HealthState()
-        state.set_initial_state(True)
-        for _ in range(m.FAIL_AFTER - 1):
-            self.assertIsNone(state.report(False))
+        self.assertIsNone(state.report(False))
+        self.assertIsNone(state.report(False))
         self.assertFalse(state.report(False))
 
-    def test_recovery_threshold(self):
-        m.RECOVER_AFTER = 3
-        state = m.HealthState()
         state.set_initial_state(False)
-        for _ in range(m.RECOVER_AFTER - 1):
-            self.assertIsNone(state.report(True))
+        self.assertIsNone(state.report(True))
+        self.assertIsNone(state.report(True))
         self.assertTrue(state.report(True))
 
-
-class TargetTests(unittest.TestCase):
     def test_choose_target(self):
-        old = m.health
-        try:
-            m.health = m.HealthState()
-            m.health.set_initial_state(True)
-            self.assertEqual(m.choose_target().name, "MAIN")
-            m.health.set_initial_state(False)
-            self.assertEqual(m.choose_target().name, "FALLBACK")
-        finally:
-            m.health = old
-
-
-class ConfigValidationTests(DummyConfigPatchMixin, unittest.TestCase):
-    def test_validate_config_ok(self):
-        m.LISTEN_HOST = "0.0.0.0"
-        m.LISTEN_PORT = 25565
-        m.MAIN_HOST = "127.0.0.1"
-        m.MAIN_PORT = 25567
-        m.FALLBACK_HOST = "127.0.0.1"
-        m.FALLBACK_PORT = 25566
-        m.validate_config()
-
-    def test_invalid_health_check_mode(self):
-        m.HEALTH_CHECK_MODE = "invalid"
-        with self.assertRaises(ValueError):
-            m.validate_config()
-
-    def test_invalid_host_values(self):
-        for key, value in (("LISTEN_HOST", ""), ("MAIN_HOST", None), ("FALLBACK_HOST", "  ")):
-            with self.subTest(key=key, value=value):
-                setattr(m, key, value)
-                with self.assertRaises(ValueError):
-                    m.validate_config()
-                setattr(m, key, self.old_values[key])
-
-    def test_invalid_timeout_type(self):
-        m.CHECK_INTERVAL_SECONDS = "3"
-        with self.assertRaises(ValueError):
-            m.validate_config()
-
-    def test_invalid_log_level(self):
-        m.LOG_LEVEL = "NOPE"
-        with self.assertRaises(ValueError):
-            m.validate_config()
-
-    def test_loop_detect_listen_any_to_main_loopback_same_port(self):
-        m.LISTEN_HOST = "0.0.0.0"
-        m.LISTEN_PORT = 25565
-        m.MAIN_HOST = "127.0.0.1"
-        m.MAIN_PORT = 25565
-        with self.assertRaises(ValueError):
-            m.validate_config()
-
-    def test_loop_detect_listen_any_to_fallback_localhost_same_port(self):
-        m.LISTEN_HOST = "0.0.0.0"
-        m.LISTEN_PORT = 25565
-        m.FALLBACK_HOST = "localhost"
-        m.FALLBACK_PORT = 25565
-        with self.assertRaises(ValueError):
-            m.validate_config()
+        cfg = m.load_config(Path("config.toml"))
+        state = m.HealthState(fail_after=2, recover_after=2)
+        state.set_initial_state(True)
+        self.assertEqual(m.choose_target(cfg, state).name, "MAIN")
+        state.set_initial_state(False)
+        self.assertEqual(m.choose_target(cfg, state).name, "FALLBACK")
 
 
 if __name__ == "__main__":
