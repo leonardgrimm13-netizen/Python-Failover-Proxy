@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 import asyncio
+import importlib
 import logging
+from pathlib import Path
 import signal
 import socket
+import sys
 from dataclasses import dataclass
 from typing import Optional
 
 # ============================================================
 # EINSTELLUNGEN
 # ============================================================
+
+CONFIG_PATH = Path(__file__).resolve().parent / "config.toml"
 
 LISTEN_HOST = "0.0.0.0"
 LISTEN_PORT = 25565
@@ -40,6 +45,52 @@ HEALTH_CHECK_MODE = "tcp"
 BUFFER_SIZE = 64 * 1024
 CONNECTION_TIMEOUT_SECONDS = 5.0
 LOG_LEVEL = "INFO"
+
+
+def _load_toml(path: Path) -> dict:
+    module_name = "tomllib" if sys.version_info >= (3, 11) else "tomli"
+    toml_module = importlib.import_module(module_name)
+    with path.open("rb") as config_file:
+        return toml_module.load(config_file)
+
+
+def load_config(path: Path = CONFIG_PATH) -> None:
+    global LISTEN_HOST, LISTEN_PORT
+    global MAIN_HOST, MAIN_PORT
+    global FALLBACK_HOST, FALLBACK_PORT
+    global CHECK_INTERVAL_SECONDS, CHECK_TIMEOUT_SECONDS
+    global FAIL_AFTER, RECOVER_AFTER
+    global HEALTH_CHECK_MODE
+    global BUFFER_SIZE, CONNECTION_TIMEOUT_SECONDS
+    global LOG_LEVEL
+    global MAIN_TARGET, FALLBACK_TARGET
+
+    data = _load_toml(path)
+
+    proxy = data["proxy"]
+    main = data["main"]
+    fallback = data["fallback"]
+    healthcheck = data["healthcheck"]
+    connection = data["connection"]
+    logging_cfg = data["logging"]
+
+    LISTEN_HOST = proxy["listen_host"]
+    LISTEN_PORT = proxy["listen_port"]
+    MAIN_HOST = main["host"]
+    MAIN_PORT = main["port"]
+    FALLBACK_HOST = fallback["host"]
+    FALLBACK_PORT = fallback["port"]
+    CHECK_INTERVAL_SECONDS = healthcheck["interval_seconds"]
+    CHECK_TIMEOUT_SECONDS = healthcheck["timeout_seconds"]
+    FAIL_AFTER = healthcheck["fail_after"]
+    RECOVER_AFTER = healthcheck["recover_after"]
+    HEALTH_CHECK_MODE = healthcheck["mode"]
+    BUFFER_SIZE = connection["buffer_size"]
+    CONNECTION_TIMEOUT_SECONDS = connection["timeout_seconds"]
+    LOG_LEVEL = logging_cfg["level"]
+
+    MAIN_TARGET = Target("MAIN", MAIN_HOST, MAIN_PORT)
+    FALLBACK_TARGET = Target("FALLBACK", FALLBACK_HOST, FALLBACK_PORT)
 
 
 # ============================================================
@@ -389,10 +440,12 @@ async def handle_client(
 
 async def main() -> None:
     try:
+        load_config()
         validate_config()
-    except ValueError as exc:
+    except (FileNotFoundError, KeyError, ValueError, ModuleNotFoundError) as exc:
         log.error("Ungültige Konfiguration: %s", exc)
         return
+    log.setLevel(getattr(logging, LOG_LEVEL.upper(), logging.INFO))
 
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()

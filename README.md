@@ -69,22 +69,35 @@ python3 mc_failover_proxy.py
 
 ## Configuration
 
-Edit the variables at the top of `mc_failover_proxy.py`:
+Edit `config.toml` in the repository root:
 
-| Variable | Meaning | Example |
-|---|---|---|
-| `LISTEN_HOST` | Interface/IP where the proxy listens | `"0.0.0.0"` |
-| `LISTEN_PORT` | TCP port exposed to players | `25565` |
-| `MAIN_HOST` | Main Minecraft server hostname/IP | `"100.80.12.34"` |
-| `MAIN_PORT` | Main server port | `25565` |
-| `FALLBACK_HOST` | Fallback/waiting-room server hostname/IP | `"127.0.0.1"` |
-| `FALLBACK_PORT` | Fallback server port | `25566` |
-| `CHECK_INTERVAL_SECONDS` | Interval between health checks | `3.0` |
-| `CHECK_TIMEOUT_SECONDS` | Health check timeout per check | `2.0` |
-| `FAIL_AFTER` | Consecutive failures required before failover | `2` |
-| `RECOVER_AFTER` | Consecutive successes required before recovery to main | `2` |
-| `HEALTH_CHECK_MODE` | Health check mode (`"tcp"` or `"minecraft_status"`) | `"tcp"` |
-| `LOG_LEVEL` | Logging level (`"INFO"`, `"DEBUG"`, ...) | `"INFO"` |
+```toml
+[proxy]
+listen_host = "0.0.0.0"
+listen_port = 25565
+
+[main]
+host = "100.80.12.34"
+port = 25565
+
+[fallback]
+host = "127.0.0.1"
+port = 25566
+
+[healthcheck]
+mode = "tcp"
+interval_seconds = 3.0
+timeout_seconds = 2.0
+fail_after = 2
+recover_after = 2
+
+[connection]
+timeout_seconds = 5.0
+buffer_size = 65536
+
+[logging]
+level = "INFO"
+```
 
 ## Example Setup
 

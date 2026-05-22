@@ -1,5 +1,7 @@
 import asyncio
+import tempfile
 import unittest
+from pathlib import Path
 
 import mc_failover_proxy as m
 
@@ -32,6 +34,8 @@ class DummyConfigPatchMixin:
         "RECOVER_AFTER",
         "BUFFER_SIZE",
         "LOG_LEVEL",
+        "MAIN_TARGET",
+        "FALLBACK_TARGET",
     )
 
     def setUp(self):
@@ -96,6 +100,48 @@ class TargetTests(unittest.TestCase):
 
 
 class ConfigValidationTests(DummyConfigPatchMixin, unittest.TestCase):
+    def test_load_config_from_toml(self):
+        config_text = """
+[proxy]
+listen_host = "0.0.0.0"
+listen_port = 25570
+
+[main]
+host = "10.0.0.10"
+port = 25571
+
+[fallback]
+host = "10.0.0.20"
+port = 25572
+
+[healthcheck]
+mode = "tcp"
+interval_seconds = 4.0
+timeout_seconds = 1.5
+fail_after = 3
+recover_after = 4
+
+[connection]
+timeout_seconds = 6.0
+buffer_size = 32768
+
+[logging]
+level = "DEBUG"
+"""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "config.toml"
+            path.write_text(config_text, encoding="utf-8")
+            m.load_config(path)
+
+        self.assertEqual(m.LISTEN_PORT, 25570)
+        self.assertEqual(m.MAIN_HOST, "10.0.0.10")
+        self.assertEqual(m.FALLBACK_PORT, 25572)
+        self.assertEqual(m.CHECK_INTERVAL_SECONDS, 4.0)
+        self.assertEqual(m.FAIL_AFTER, 3)
+        self.assertEqual(m.BUFFER_SIZE, 32768)
+        self.assertEqual(m.LOG_LEVEL, "DEBUG")
+        self.assertEqual(m.MAIN_TARGET.host, "10.0.0.10")
+
     def test_validate_config_ok(self):
         m.LISTEN_HOST = "0.0.0.0"
         m.LISTEN_PORT = 25565
