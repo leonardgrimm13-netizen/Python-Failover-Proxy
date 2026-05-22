@@ -48,8 +48,8 @@ Python Failover Proxy
 ## Installation
 
 ```bash
-git clone https://github.com/leonardgrimm13-netizen/Python-Failover-Proxy.git
-cd Python-Failover-Proxy
+git clone https://github.com/leonardgrimm13-netizen/Minecraft-Python-Failover-Proxy.git
+cd Minecraft-Python-Failover-Proxy
 ```
 
 Optional virtual environment:
@@ -84,6 +84,7 @@ Edit the variables at the top of `mc_failover_proxy.py`:
 | `FAIL_AFTER` | Consecutive failures required before failover | `2` |
 | `RECOVER_AFTER` | Consecutive successes required before recovery to main | `2` |
 | `HEALTH_CHECK_MODE` | Health check mode (`"tcp"` or `"minecraft_status"`) | `"tcp"` |
+| `LOG_LEVEL` | Logging level (`"INFO"`, `"DEBUG"`, ...) | `"INFO"` |
 
 ## Example Setup
 
@@ -95,6 +96,13 @@ Edit the variables at the top of `mc_failover_proxy.py`:
 
 ```bash
 python3 mc_failover_proxy.py
+```
+
+
+## Tests
+
+```bash
+python3 -m unittest
 ```
 
 ## Running as a systemd Service
