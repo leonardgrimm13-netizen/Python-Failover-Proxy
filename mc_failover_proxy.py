@@ -280,21 +280,23 @@ def validate_config(config: AppConfig) -> None:
     loopback_or_any_v6 = {"::1", "localhost", "::"}
     listen_host = _normalize_host(config.proxy.listen_host)
 
-    def _validate_loop(name: str, target: TargetConfig) -> None:
+    def _validate_loop(name: str, target: TargetConfig, *, healthcheck_target: bool = False) -> None:
         normalized_target_host = _normalize_host(target.host)
+        loop_text = "Healthcheck-Ziel erzeugt" if healthcheck_target else f"{name} erzeugt"
         if (normalized_target_host, target.port) == (listen_host, config.proxy.listen_port):
-            raise ConfigError(f"{name} zeigt exakt auf den Proxy-Listener und erzeugt eine Proxy-Schleife.")
+            raise ConfigError(f"{loop_text} exakt eine Proxy-Schleife zum Listener.")
         if target.port != config.proxy.listen_port:
             return
         if listen_host in loopback_hosts_v4 and normalized_target_host in loopback_hosts_v4:
-            raise ConfigError(f"{name} nutzt denselben Port wie der Listener auf Loopback. Proxy-Schleife.")
+            raise ConfigError(f"{loop_text} auf Loopback denselben Port wie der Listener.")
         if listen_host == "0.0.0.0" and normalized_target_host in loopback_or_any_v4:
-            raise ConfigError(f"{name} erzeugt bei LISTEN_HOST=0.0.0.0 wahrscheinlich eine Proxy-Schleife.")
+            raise ConfigError(f"{loop_text} bei LISTEN_HOST=0.0.0.0 wahrscheinlich eine Proxy-Schleife.")
         if listen_host == "::" and normalized_target_host in loopback_or_any_v6:
-            raise ConfigError(f"{name} erzeugt bei LISTEN_HOST=:: wahrscheinlich eine Proxy-Schleife.")
+            raise ConfigError(f"{loop_text} bei LISTEN_HOST=:: wahrscheinlich eine Proxy-Schleife.")
 
     _validate_loop("MAIN", config.main)
     _validate_loop("FALLBACK", config.fallback)
+    _validate_loop("HEALTHCHECK", get_healthcheck_target(config), healthcheck_target=True)
 
 
 def get_healthcheck_target(config: AppConfig) -> TargetConfig:
@@ -418,7 +420,15 @@ async def minecraft_status_health_check(
             return HealthCheckResult(ok=False, reason="status_json_too_large_or_negative")
 
         status_json = await payload_reader.readexactly(json_length)
-        parsed = json.loads(status_json.decode("utf-8"))
+        try:
+            decoded_status = status_json.decode("utf-8")
+        except UnicodeDecodeError:
+            return HealthCheckResult(ok=False, reason="status_json_invalid_utf8")
+
+        try:
+            parsed = json.loads(decoded_status)
+        except json.JSONDecodeError:
+            return HealthCheckResult(ok=False, reason="status_json_invalid_json")
         if not isinstance(parsed, dict):
             return HealthCheckResult(ok=False, reason="status_json_not_object")
 
@@ -527,7 +537,7 @@ async def health_loop(config: AppConfig, health: HealthState, stop_event: asynci
                 log.info(
                     "Healthcheck ok (%s): latency=%.1fms version=%s players=%s/%s reason=%s",
                     config.healthcheck.mode,
-                    result.latency_ms or -1,
+                    result.latency_ms if result.latency_ms is not None else -1,
                     result.version_name or "n/a",
                     result.players_online if result.players_online is not None else "n/a",
                     result.players_max if result.players_max is not None else "n/a",

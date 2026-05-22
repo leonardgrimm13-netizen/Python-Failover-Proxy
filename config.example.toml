@@ -5,36 +5,38 @@ listen_host = "0.0.0.0"
 listen_port = 25565
 
 [main]
-# Route target for players when MAIN is healthy (often Velocity)
+# Route target for players when MAIN is healthy.
+# Example: local Velocity instance behind the failover proxy.
+# IMPORTANT: Velocity must NOT listen on the same host+port as the failover proxy.
 host = "127.0.0.1"
-port = 25565
+port = 25564
 
 [fallback]
+# Fallback / waiting room server.
 host = "127.0.0.1"
 port = 25566
 
 [healthcheck]
-# tcp: only TCP connect
-# minecraft_status: real Minecraft status ping (recommended for backend checks)
+# "minecraft_status" checks the real backend behind Velocity.
 mode = "minecraft_status"
 
-# Optional healthcheck target override.
+# Optional healthcheck override.
 # If unset, main.host/main.port are checked.
-# Useful when MAIN=Velocity but health should come from real backend server.
-# target_host = "100.x.x.x"
-# target_port = 25567
+# Useful when main points to Velocity but health should come from the real backend.
+target_host = "100.64.0.10"
+target_port = 25567
 
-# Protocol version used in status handshake.
+# Minecraft status handshake protocol version (default: 767).
+# Adjust if your network/server stack needs another protocol id.
 protocol_version = 767
-
-# Optional hostname sent in handshake; defaults to target_host/main.host.
 # status_hostname = "survival.example.com"
 
-# true: parse and validate response JSON
-# false: packet id 0x00 is enough
+# true: require and parse valid JSON status response.
+# false: accept valid status packet id 0x00 without JSON parsing.
 require_valid_json = true
 
-# log version/players/latency info on successful checks
+# true: log successful status details (version/players/latency).
+# Can be noisy with low interval_seconds.
 log_status_details = false
 
 interval_seconds = 3.0
