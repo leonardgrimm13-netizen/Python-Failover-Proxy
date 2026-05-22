@@ -48,8 +48,8 @@ Python Failover Proxy
 ## Installation
 
 ```bash
-git clone https://github.com/leonardgrimm13-netizen/Python-Failover-Proxy.git
-cd Python-Failover-Proxy
+git clone https://github.com/leonardgrimm13-netizen/Minecraft-Python-Failover-Proxy.git
+cd Minecraft-Python-Failover-Proxy
 ```
 
 Optional (virtuelle Umgebung):
@@ -78,6 +78,7 @@ Die Konfiguration erfolgt direkt oben in `mc_failover_proxy.py`:
 | `FAIL_AFTER` | Anzahl Fehlversuche bis zum Umschalten auf Fallback | `2` |
 | `RECOVER_AFTER` | Anzahl erfolgreicher Checks bis zurück zum Hauptserver | `2` |
 | `HEALTH_CHECK_MODE` | Modus: `"tcp"` oder `"minecraft_status"` | `"tcp"` |
+| `LOG_LEVEL` | Logging-Level (`"INFO"`, `"DEBUG"`, ...) | `"INFO"` |
 
 ## Beispiel-Setup
 
@@ -89,6 +90,12 @@ Die Konfiguration erfolgt direkt oben in `mc_failover_proxy.py`:
 
 ```bash
 python3 mc_failover_proxy.py
+```
+
+## Tests
+
+```bash
+python3 -m unittest
 ```
 
 ## Betrieb als systemd-Service
