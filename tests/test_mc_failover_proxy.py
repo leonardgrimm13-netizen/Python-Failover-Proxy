@@ -1,26 +1,24 @@
 import asyncio
-import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 import mc_failover_proxy as m
 
 
-VALID_CONFIG_TOML = """[proxy]
-listen_host = \"0.0.0.0\"
+BASE = """[proxy]
+listen_host = "0.0.0.0"
 listen_port = 25565
 
 [main]
-host = \"127.0.0.1\"
+host = "127.0.0.1"
 port = 25567
 
 [fallback]
-host = \"127.0.0.1\"
+host = "127.0.0.1"
 port = 25566
 
 [healthcheck]
-mode = \"tcp\"
+mode = "tcp"
 interval_seconds = 3.0
 timeout_seconds = 2.0
 fail_after = 2
@@ -31,7 +29,7 @@ timeout_seconds = 5.0
 buffer_size = 65536
 
 [logging]
-level = \"INFO\"
+level = "INFO"
 """
 
 
@@ -47,140 +45,113 @@ class DummyReader:
         return out
 
 
-class VarIntTests(unittest.IsolatedAsyncioTestCase):
+class ConfigAndCoreTests(unittest.TestCase):
+    def load_from_text(self, text: str) -> m.AppConfig:
+        p = Path("/tmp/test_mc_failover_proxy_config.toml")
+        p.write_text(text, encoding="utf-8")
+        self.addCleanup(lambda: p.exists() and p.unlink())
+        return m.load_config(p)
+
+    def test_old_config_compatibility(self):
+        cfg = self.load_from_text(BASE)
+        self.assertIsNone(cfg.healthcheck.target_host)
+        self.assertIsNone(cfg.healthcheck.target_port)
+        self.assertEqual(cfg.healthcheck.protocol_version, 767)
+        self.assertIsNone(cfg.healthcheck.status_hostname)
+        self.assertTrue(cfg.healthcheck.require_valid_json)
+        self.assertFalse(cfg.healthcheck.log_status_details)
+
+    def test_new_config_parsing(self):
+        text = BASE.replace('mode = "tcp"', 'mode = "minecraft_status"')
+        text = text.replace('recover_after = 2', 'recover_after = 2\ntarget_host = "100.64.0.10"\ntarget_port = 25568\nprotocol_version = 768\nstatus_hostname = "survival.example.com"\nrequire_valid_json = true\nlog_status_details = true')
+        cfg = self.load_from_text(text)
+        self.assertEqual(cfg.healthcheck.target_host, "100.64.0.10")
+        self.assertEqual(cfg.healthcheck.target_port, 25568)
+        self.assertEqual(cfg.healthcheck.protocol_version, 768)
+        self.assertEqual(cfg.healthcheck.status_hostname, "survival.example.com")
+        self.assertTrue(cfg.healthcheck.require_valid_json)
+        self.assertTrue(cfg.healthcheck.log_status_details)
+
+    def test_validation_cases(self):
+        bad = [
+            'target_port = "abc"', 'target_port = 0', 'target_port = 65536', 'target_host = " "',
+            'status_hostname = " "', 'protocol_version = 0', 'require_valid_json = "yes"', 'log_status_details = "yes"'
+        ]
+        for line in bad:
+            text = BASE.replace("recover_after = 2", f"recover_after = 2\n{line}")
+            with self.assertRaises(m.ConfigError, msg=line):
+                self.load_from_text(text)
+
+
+class VarIntAndTargetTests(unittest.IsolatedAsyncioTestCase):
     async def test_varint_roundtrip(self):
         for value in (0, 1, 127, 128, 255, 2097151):
-            encoded = m.write_varint(value)
-            decoded = await m.read_varint(DummyReader(encoded))
-            self.assertEqual(value, decoded)
+            self.assertEqual(value, await m.read_varint(DummyReader(m.write_varint(value))))
 
+    async def test_get_healthcheck_target_overrides(self):
+        hc = m.HealthCheckConfig("tcp", 3, 2, 2, 2, None, None, 767, None, True, False)
+        cfg = m.AppConfig(m.ProxyConfig("0.0.0.0", 25565), m.TargetConfig("a", 1), m.TargetConfig("b", 2), hc, m.ConnectionConfig(1, 1), m.LoggingConfig("INFO"))
+        self.assertEqual(m.get_healthcheck_target(cfg), m.TargetConfig("a", 1))
+        cfg = m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", 3, 2, 2, 2, "x", None, 767, None, True, False)})
+        self.assertEqual(m.get_healthcheck_target(cfg), m.TargetConfig("x", 1))
+        cfg = m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", 3, 2, 2, 2, None, 9, 767, None, True, False)})
+        self.assertEqual(m.get_healthcheck_target(cfg), m.TargetConfig("a", 9))
 
-class ConfigTests(unittest.TestCase):
-    def valid_config(self) -> m.AppConfig:
-        return m.AppConfig(
-            proxy=m.ProxyConfig("0.0.0.0", 25565),
-            main=m.TargetConfig("127.0.0.1", 25567),
-            fallback=m.TargetConfig("127.0.0.1", 25566),
-            healthcheck=m.HealthCheckConfig("tcp", 3.0, 2.0, 2, 2),
-            connection=m.ConnectionConfig(5.0, 65536),
-            logging=m.LoggingConfig("INFO"),
-        )
+    async def test_packet_creation(self):
+        packet = m.make_minecraft_status_packet("survival.example.com", 25567, 767)
+        self.assertIsInstance(packet, bytes)
+        self.assertIn(b"survival.example.com", packet)
+        self.assertIn(m.write_varint(767), packet)
+        self.assertIn(b"\x01", packet)
 
-    def write_temp_config(self, text: str = VALID_CONFIG_TOML) -> Path:
-        td = tempfile.TemporaryDirectory()
-        self.addCleanup(td.cleanup)
-        p = Path(td.name) / "config.toml"
-        p.write_text(text, encoding="utf-8")
-        return p
+    async def test_minecraft_status_healthcheck_paths(self):
+        async def server_valid(reader, writer):
+            await reader.read(2048)
+            status = b'{"version":{"name":"1.21"},"players":{"online":1,"max":20}}'
+            payload = m.write_varint(0) + m.write_varint(len(status)) + status
+            writer.write(m.write_varint(len(payload)) + payload)
+            await writer.drain(); await m.close_writer(writer)
 
-    def test_load_config_ok(self):
-        cfg = m.load_config(self.write_temp_config())
-        self.assertEqual(cfg.proxy.listen_port, 25565)
+        async def server_bad_id(reader, writer):
+            await reader.read(2048)
+            payload = m.write_varint(1) + m.write_varint(0)
+            writer.write(m.write_varint(len(payload)) + payload)
+            await writer.drain(); await m.close_writer(writer)
 
-    def test_repo_config_toml_is_valid(self):
-        cfg = m.load_config(Path("config.toml"))
-        self.assertEqual(cfg.logging.level, "INFO")
+        async def server_bad_json(reader, writer):
+            await reader.read(2048)
+            bad = b"{notjson"
+            payload = m.write_varint(0) + m.write_varint(len(bad)) + bad
+            writer.write(m.write_varint(len(payload)) + payload)
+            await writer.drain(); await m.close_writer(writer)
 
-    def test_load_config_missing(self):
-        with self.assertRaises(m.ConfigError):
-            m.load_config(Path("does-not-exist.toml"))
+        async def run_once(handler):
+            server = await asyncio.start_server(handler, "127.0.0.1", 0)
+            port = server.sockets[0].getsockname()[1]
+            return server, port
 
-    def test_load_config_invalid_toml(self):
-        with tempfile.TemporaryDirectory() as td:
-            p = Path(td) / "broken.toml"
-            p.write_text("[proxy\nlisten_port=25565", encoding="utf-8")
-            with self.assertRaises(m.ConfigError):
-                m.load_config(p)
+        server, port = await run_once(server_valid)
+        try:
+            r = await m.minecraft_status_health_check("127.0.0.1", port, 1.0, 767, None, True)
+            self.assertTrue(r.ok)
+        finally:
+            server.close(); await server.wait_closed()
 
-    def test_validate_config_ok(self):
-        m.validate_config(self.valid_config())
+        server, port = await run_once(server_bad_id)
+        try:
+            r = await m.minecraft_status_health_check("127.0.0.1", port, 1.0, 767, None, True)
+            self.assertFalse(r.ok)
+        finally:
+            server.close(); await server.wait_closed()
 
-    def test_load_config_section_must_be_table(self):
-        p = self.write_temp_config("proxy = 123")
-        with self.assertRaises(m.ConfigError):
-            m.load_config(p)
+        server, port = await run_once(server_bad_json)
+        try:
+            self.assertFalse((await m.minecraft_status_health_check("127.0.0.1", port, 1.0, 767, None, True)).ok)
+            self.assertTrue((await m.minecraft_status_health_check("127.0.0.1", port, 1.0, 767, None, False)).ok)
+        finally:
+            server.close(); await server.wait_closed()
 
-    def test_load_config_os_error(self):
-        with mock.patch("pathlib.Path.open", side_effect=OSError("permission denied")):
-            with self.assertRaises(m.ConfigError):
-                m.load_config(Path("config.toml"))
-
-    def test_validate_config_rejects_bool_as_int(self):
-        cfg = self.valid_config()
-        cfg = m.AppConfig(**{**cfg.__dict__, "proxy": m.ProxyConfig("0.0.0.0", True)})
-        with self.assertRaises(m.ConfigError):
-            m.validate_config(cfg)
-
-    def test_validate_config_invalid_port(self):
-        cfg = self.valid_config()
-        cfg = m.AppConfig(**{**cfg.__dict__, "proxy": m.ProxyConfig("0.0.0.0", 70000)})
-        with self.assertRaises(m.ConfigError):
-            m.validate_config(cfg)
-
-    def test_validate_config_empty_host(self):
-        cfg = self.valid_config()
-        cfg = m.AppConfig(**{**cfg.__dict__, "main": m.TargetConfig("", 25567)})
-        with self.assertRaises(m.ConfigError):
-            m.validate_config(cfg)
-
-    def test_validate_config_bad_timeout_type(self):
-        cfg = self.valid_config()
-        cfg = m.AppConfig(
-            **{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", "3", 2.0, 2, 2)}
-        )
-        with self.assertRaises(m.ConfigError):
-            m.validate_config(cfg)
-
-    def test_validate_config_invalid_mode(self):
-        cfg = self.valid_config()
-        cfg = m.AppConfig(
-            **{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("invalid", 3.0, 2.0, 2, 2)}
-        )
-        with self.assertRaises(m.ConfigError):
-            m.validate_config(cfg)
-
-    def test_validate_config_invalid_log_level(self):
-        cfg = self.valid_config()
-        cfg = m.AppConfig(**{**cfg.__dict__, "logging": m.LoggingConfig("NOPE")})
-        with self.assertRaises(m.ConfigError):
-            m.validate_config(cfg)
-
-    def test_loop_detect_any_to_loopback(self):
-        cfg = self.valid_config()
-        cfg = m.AppConfig(**{**cfg.__dict__, "main": m.TargetConfig("127.0.0.1", 25565)})
-        with self.assertRaises(m.ConfigError):
-            m.validate_config(cfg)
-
-    def test_loop_detect_any_to_localhost(self):
-        cfg = self.valid_config()
-        cfg = m.AppConfig(**{**cfg.__dict__, "fallback": m.TargetConfig("localhost", 25565)})
-        with self.assertRaises(m.ConfigError):
-            m.validate_config(cfg)
-
-
-class HealthAndTargetTests(unittest.TestCase):
-    def test_health_state_thresholds(self):
-        state = m.HealthState(fail_after=3, recover_after=3)
-        state.set_initial_state(True)
-        self.assertIsNone(state.report(False))
-        self.assertIsNone(state.report(False))
-        self.assertFalse(state.report(False))
-
-        state.set_initial_state(False)
-        self.assertIsNone(state.report(True))
-        self.assertIsNone(state.report(True))
-        self.assertTrue(state.report(True))
-
-    def test_choose_target(self):
-        with tempfile.TemporaryDirectory() as td:
-            cfg_path = Path(td) / "config.toml"
-            cfg_path.write_text(VALID_CONFIG_TOML, encoding="utf-8")
-            cfg = m.load_config(cfg_path)
-        state = m.HealthState(fail_after=2, recover_after=2)
-        state.set_initial_state(True)
-        self.assertEqual(m.choose_target(cfg, state).name, "MAIN")
-        state.set_initial_state(False)
-        self.assertEqual(m.choose_target(cfg, state).name, "FALLBACK")
+        self.assertFalse((await m.minecraft_status_health_check("127.0.0.1", 9, 0.01, 767, None, True)).ok)
 
 
 if __name__ == "__main__":

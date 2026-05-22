@@ -1,43 +1,50 @@
 # Minecraft Python Failover Proxy example configuration
-# Copy this file to config.toml and adapt values for your environment.
 
 [proxy]
-# Host/IP where the proxy accepts incoming player connections.
-# 0.0.0.0 = all IPv4 interfaces on this host.
 listen_host = "0.0.0.0"
-# TCP listen port for players.
 listen_port = 25565
 
 [main]
-# Primary Minecraft server target.
+# Route target for players when MAIN is healthy (often Velocity)
 host = "127.0.0.1"
-port = 25567
+port = 25565
 
 [fallback]
-# Fallback target when MAIN is considered unhealthy.
 host = "127.0.0.1"
 port = 25566
 
 [healthcheck]
-# Healthcheck mode:
-# - "tcp" (recommended): only tests TCP reachability.
-# - "minecraft_status": performs a Minecraft status ping.
-mode = "tcp"
-# Seconds between health checks.
+# tcp: only TCP connect
+# minecraft_status: real Minecraft status ping (recommended for backend checks)
+mode = "minecraft_status"
+
+# Optional healthcheck target override.
+# If unset, main.host/main.port are checked.
+# Useful when MAIN=Velocity but health should come from real backend server.
+# target_host = "100.x.x.x"
+# target_port = 25567
+
+# Protocol version used in status handshake.
+protocol_version = 767
+
+# Optional hostname sent in handshake; defaults to target_host/main.host.
+# status_hostname = "survival.example.com"
+
+# true: parse and validate response JSON
+# false: packet id 0x00 is enough
+require_valid_json = true
+
+# log version/players/latency info on successful checks
+log_status_details = false
+
 interval_seconds = 3.0
-# Timeout for each healthcheck attempt.
 timeout_seconds = 2.0
-# Consecutive failed checks required before switching to FALLBACK.
 fail_after = 2
-# Consecutive successful checks required before switching back to MAIN.
 recover_after = 2
 
 [connection]
-# Timeout for establishing upstream connections.
 timeout_seconds = 5.0
-# Forwarding buffer size in bytes.
 buffer_size = 65536
 
 [logging]
-# One of: DEBUG, INFO, WARNING, ERROR, CRITICAL
 level = "INFO"

@@ -250,3 +250,49 @@ python3 -m compileall .
 ---
 
 [Deutsch](README.de.md)
+
+## Velocity / Backend healthcheck
+
+Checking only Velocity's TCP port is often not enough. Velocity can be online while the actual backend (Paper/Fabric) is down.
+
+Use separate targets:
+- `main.host` / `main.port`: where players are routed when healthy.
+- `healthcheck.target_host` / `healthcheck.target_port`: what is checked for MAIN health.
+
+Example:
+
+```toml
+[main]
+host = "127.0.0.1"
+port = 25565
+
+[fallback]
+host = "127.0.0.1"
+port = 25566
+
+[healthcheck]
+mode = "minecraft_status"
+target_host = "100.x.x.x"
+target_port = 25567
+require_valid_json = true
+interval_seconds = 3.0
+timeout_seconds = 2.0
+fail_after = 2
+recover_after = 2
+```
+
+`minecraft_status` requires backend `server.properties` to allow status ping:
+- `enable-status=true`
+
+Manual checks:
+
+```bash
+python3 -m py_compile mc_failover_proxy.py
+python3 -m unittest discover -s tests
+python3 mc_failover_proxy.py --config config.toml
+journalctl -u mc-failover -f
+ss -ltnp | grep 25565
+nc -vz <backend-ip> <backend-port>
+```
+
+`nc` only proves TCP reachability. `minecraft_status` proves the target answered like a Minecraft server.
