@@ -80,3 +80,8 @@ WantedBy=multi-user.target
 - Wrong value types: ports must be ints, timeouts must be numeric.
 - Proxy loop detected: do not point MAIN/FALLBACK to listener host+port.
 - Python 3.10 import error for TOML: run `python3 -m pip install -r requirements.txt`.
+
+
+`config.toml` and `config.example.toml` are identical starter templates without secrets.
+
+On config problems (missing file, invalid TOML, missing keys, wrong types), the proxy exits with code `1` and prints a clear `Konfigurationsfehler: ...` message to stderr.

@@ -18,7 +18,6 @@ DEFAULT_CONFIG_PATH = Path("config.toml")
 VALID_HEALTH_CHECK_MODES = {"tcp", "minecraft_status"}
 VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
-
 log = logging.getLogger("mc-failover")
 
 
@@ -90,7 +89,6 @@ class HealthState:
 
     def report(self, ok: bool) -> Optional[bool]:
         old_state = self.main_healthy
-
         if ok:
             self._successes += 1
             self._failures = 0
@@ -101,7 +99,6 @@ class HealthState:
             self._successes = 0
             if self.main_healthy and self._failures >= self.fail_after:
                 self.main_healthy = False
-
         return self.main_healthy if old_state != self.main_healthy else None
 
 
@@ -113,11 +110,19 @@ def setup_logging(level: str) -> None:
     )
 
 
-def _read_required(data: dict[str, Any], section: str, key: str) -> Any:
-    try:
-        return data[section][key]
-    except KeyError as exc:
-        raise ConfigError(f"Fehlender Konfigurationswert: [{section}].{key}") from exc
+def _read_section(data: dict[str, Any], section: str) -> dict[str, Any]:
+    value = data.get(section)
+    if value is None:
+        raise ConfigError(f"Fehlende Sektion: [{section}]")
+    if not isinstance(value, dict):
+        raise ConfigError(f"Sektion [{section}] muss ein TOML-Table sein.")
+    return value
+
+
+def _read_required(section_data: dict[str, Any], section: str, key: str) -> Any:
+    if key not in section_data:
+        raise ConfigError(f"Fehlender Konfigurationswert: [{section}].{key}")
+    return section_data[key]
 
 
 def load_config(path: Path) -> AppConfig:
@@ -129,61 +134,88 @@ def load_config(path: Path) -> AppConfig:
             raw = tomllib.load(fh)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"Ungültiges TOML in {path}: {exc}") from exc
+    except OSError as exc:
+        raise ConfigError(f"Konfigurationsdatei konnte nicht gelesen werden: {path} ({exc})") from exc
 
     if not isinstance(raw, dict):
         raise ConfigError("Konfigurationsdatei muss ein TOML-Objekt enthalten.")
 
+    proxy = _read_section(raw, "proxy")
+    main = _read_section(raw, "main")
+    fallback = _read_section(raw, "fallback")
+    healthcheck = _read_section(raw, "healthcheck")
+    connection = _read_section(raw, "connection")
+    logging_cfg = _read_section(raw, "logging")
+
     config = AppConfig(
         proxy=ProxyConfig(
-            listen_host=_read_required(raw, "proxy", "listen_host"),
-            listen_port=_read_required(raw, "proxy", "listen_port"),
+            listen_host=_read_required(proxy, "proxy", "listen_host"),
+            listen_port=_read_required(proxy, "proxy", "listen_port"),
         ),
-        main=TargetConfig(host=_read_required(raw, "main", "host"), port=_read_required(raw, "main", "port")),
+        main=TargetConfig(
+            host=_read_required(main, "main", "host"),
+            port=_read_required(main, "main", "port"),
+        ),
         fallback=TargetConfig(
-            host=_read_required(raw, "fallback", "host"), port=_read_required(raw, "fallback", "port")
+            host=_read_required(fallback, "fallback", "host"),
+            port=_read_required(fallback, "fallback", "port"),
         ),
         healthcheck=HealthCheckConfig(
-            mode=_read_required(raw, "healthcheck", "mode"),
-            interval_seconds=_read_required(raw, "healthcheck", "interval_seconds"),
-            timeout_seconds=_read_required(raw, "healthcheck", "timeout_seconds"),
-            fail_after=_read_required(raw, "healthcheck", "fail_after"),
-            recover_after=_read_required(raw, "healthcheck", "recover_after"),
+            mode=_read_required(healthcheck, "healthcheck", "mode"),
+            interval_seconds=_read_required(healthcheck, "healthcheck", "interval_seconds"),
+            timeout_seconds=_read_required(healthcheck, "healthcheck", "timeout_seconds"),
+            fail_after=_read_required(healthcheck, "healthcheck", "fail_after"),
+            recover_after=_read_required(healthcheck, "healthcheck", "recover_after"),
         ),
         connection=ConnectionConfig(
-            timeout_seconds=_read_required(raw, "connection", "timeout_seconds"),
-            buffer_size=_read_required(raw, "connection", "buffer_size"),
+            timeout_seconds=_read_required(connection, "connection", "timeout_seconds"),
+            buffer_size=_read_required(connection, "connection", "buffer_size"),
         ),
-        logging=LoggingConfig(level=_read_required(raw, "logging", "level")),
+        logging=LoggingConfig(level=_read_required(logging_cfg, "logging", "level")),
     )
     validate_config(config)
     return config
 
 
 def validate_config(config: AppConfig) -> None:
-    def _validate_port(name: str, value: int) -> None:
-        if not isinstance(value, int) or not (1 <= value <= 65535):
+    def _is_int(value: Any) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool)
+
+    def _validate_port(name: str, value: Any) -> None:
+        if not _is_int(value) or not (1 <= value <= 65535):
             raise ConfigError(f"{name} muss ein Integer zwischen 1 und 65535 sein (aktuell: {value!r}).")
 
     _validate_port("proxy.listen_port", config.proxy.listen_port)
     _validate_port("main.port", config.main.port)
     _validate_port("fallback.port", config.fallback.port)
 
-    for key, value in (("healthcheck.fail_after", config.healthcheck.fail_after), ("healthcheck.recover_after", config.healthcheck.recover_after)):
-        if not isinstance(value, int) or value < 1:
+    for key, value in (
+        ("healthcheck.fail_after", config.healthcheck.fail_after),
+        ("healthcheck.recover_after", config.healthcheck.recover_after),
+    ):
+        if not _is_int(value) or value < 1:
             raise ConfigError(f"{key} muss ein Integer >= 1 sein (aktuell: {value!r}).")
 
-    if not isinstance(config.connection.buffer_size, int) or config.connection.buffer_size <= 0:
-        raise ConfigError("connection.buffer_size muss ein Integer > 0 sein.")
+    if not _is_int(config.connection.buffer_size) or config.connection.buffer_size <= 0:
+        raise ConfigError(f"connection.buffer_size muss ein Integer > 0 sein (aktuell: {config.connection.buffer_size!r}).")
 
-    if config.healthcheck.mode not in VALID_HEALTH_CHECK_MODES:
+    if not isinstance(config.healthcheck.mode, str) or config.healthcheck.mode not in VALID_HEALTH_CHECK_MODES:
         raise ConfigError("healthcheck.mode muss 'tcp' oder 'minecraft_status' sein.")
 
-    for host_name, host_value in (("proxy.listen_host", config.proxy.listen_host), ("main.host", config.main.host), ("fallback.host", config.fallback.host)):
+    for host_name, host_value in (
+        ("proxy.listen_host", config.proxy.listen_host),
+        ("main.host", config.main.host),
+        ("fallback.host", config.fallback.host),
+    ):
         if not isinstance(host_value, str) or not host_value.strip():
             raise ConfigError(f"{host_name} muss ein nicht-leerer String sein (aktuell: {host_value!r}).")
 
-    for key, value in (("healthcheck.interval_seconds", config.healthcheck.interval_seconds), ("healthcheck.timeout_seconds", config.healthcheck.timeout_seconds), ("connection.timeout_seconds", config.connection.timeout_seconds)):
-        if not isinstance(value, (int, float)) or value <= 0:
+    for key, value in (
+        ("healthcheck.interval_seconds", config.healthcheck.interval_seconds),
+        ("healthcheck.timeout_seconds", config.healthcheck.timeout_seconds),
+        ("connection.timeout_seconds", config.connection.timeout_seconds),
+    ):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
             raise ConfigError(f"{key} muss int oder float und > 0 sein (aktuell: {value!r}).")
 
     if not isinstance(config.logging.level, str) or config.logging.level.upper() not in VALID_LOG_LEVELS:
@@ -403,15 +435,44 @@ async def run() -> int:
         except NotImplementedError:
             log.warning("Signal-Handler für %s auf dieser Plattform nicht unterstützt.", sig.name)
 
-    health.set_initial_state(await check_main_server(config))
+    initial_ok = await check_main_server(config)
+    health.set_initial_state(initial_ok)
 
-    server = await asyncio.start_server(
-        lambda r, w: handle_client(config, health, r, w),
+    log.info(
+        "Proxy-Start: listen=%s:%s, main=%s:%s, fallback=%s:%s, mode=%s",
         config.proxy.listen_host,
         config.proxy.listen_port,
-        start_serving=True,
+        config.main.host,
+        config.main.port,
+        config.fallback.host,
+        config.fallback.port,
+        config.healthcheck.mode,
     )
+    if health.main_healthy:
+        log.info("Startzustand: MAIN ist erreichbar.")
+    else:
+        log.warning("Startzustand: MAIN ist nicht erreichbar. Fallback aktiv.")
+
+    try:
+        server = await asyncio.start_server(
+            lambda r, w: handle_client(config, health, r, w),
+            config.proxy.listen_host,
+            config.proxy.listen_port,
+            start_serving=True,
+        )
+    except OSError as exc:
+        log.error(
+            "Konnte Listener nicht starten auf %s:%s: %s",
+            config.proxy.listen_host,
+            config.proxy.listen_port,
+            exc,
+        )
+        return 1
+
     health_task = asyncio.create_task(health_loop(config, health, stop_event))
+    sockets = ", ".join(str(sock.getsockname()) for sock in server.sockets or [])
+    log.info("Proxy hört auf: %s", sockets)
+
     try:
         async with server:
             await stop_event.wait()
@@ -420,6 +481,7 @@ async def run() -> int:
         await server.wait_closed()
         health_task.cancel()
         await asyncio.gather(health_task, return_exceptions=True)
+        log.info("Proxy sauber beendet.")
     return 0
 
 

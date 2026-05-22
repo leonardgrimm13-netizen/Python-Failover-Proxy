@@ -52,3 +52,8 @@ WantedBy=multi-user.target
 - Falsche Typen: Ports = Integer, Timeouts = numerisch.
 - Proxy-Schleife erkannt: MAIN/FALLBACK nicht auf Listener-Host+Port zeigen lassen.
 - Python 3.10 ohne `tomli`: `python3 -m pip install -r requirements.txt`.
+
+
+`config.toml` und `config.example.toml` sind identische Startvorlagen ohne Secrets.
+
+Bei Konfigurationsfehlern (Datei fehlt, ungültiges TOML, fehlende Keys, falsche Typen) beendet sich der Proxy mit Exit-Code `1` und gibt eine klare Meldung `Konfigurationsfehler: ...` auf stderr aus.

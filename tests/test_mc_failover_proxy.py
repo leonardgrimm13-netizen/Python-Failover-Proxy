@@ -2,6 +2,7 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import mc_failover_proxy as m
 
@@ -54,6 +55,25 @@ class ConfigTests(unittest.TestCase):
 
     def test_validate_config_ok(self):
         m.validate_config(self.valid_config())
+
+    def test_load_config_section_must_be_table(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "bad-section.toml"
+            p.write_text("proxy = 123", encoding="utf-8")
+            with self.assertRaises(m.ConfigError):
+                m.load_config(p)
+
+    def test_load_config_os_error(self):
+        with mock.patch("pathlib.Path.open", side_effect=OSError("permission denied")):
+            with self.assertRaises(m.ConfigError):
+                m.load_config(Path("config.toml"))
+
+
+    def test_validate_config_rejects_bool_as_int(self):
+        cfg = self.valid_config()
+        cfg = m.AppConfig(**{**cfg.__dict__, "proxy": m.ProxyConfig("0.0.0.0", True)})
+        with self.assertRaises(m.ConfigError):
+            m.validate_config(cfg)
 
     def test_validate_config_invalid_port(self):
         cfg = self.valid_config()
