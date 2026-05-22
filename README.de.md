@@ -83,7 +83,7 @@ listen_port = 25565
 
 [main]
 host = "127.0.0.1"
-port = 25567
+port = 25564
 
 [fallback]
 host = "127.0.0.1"
@@ -117,6 +117,12 @@ level = "INFO"
 | `healthcheck.timeout_seconds` | Timeout pro Prüfvorgang (Sekunden) | `2.0` |
 | `healthcheck.fail_after` | Anzahl Fehlversuche bis Umschaltung auf FALLBACK | `2` |
 | `healthcheck.recover_after` | Anzahl Erfolge bis Rückschaltung auf MAIN | `2` |
+| `healthcheck.target_host` | Optionales Ziel für den Healthcheck-Host | `100.64.0.10` |
+| `healthcheck.target_port` | Optionales Ziel für den Healthcheck-Port | `25567` |
+| `healthcheck.protocol_version` | Protokollversion im Status-Handshake (Default) | `767` |
+| `healthcheck.status_hostname` | Optionaler Hostname im Status-Handshake | `survival.example.com` |
+| `healthcheck.require_valid_json` | Gültige JSON-Statusantwort erzwingen | `true` |
+| `healthcheck.log_status_details` | Erfolgreiche Version/Spieler/Latenz loggen | `false` |
 | `connection.timeout_seconds` | Timeout für Upstream-Verbindungsaufbau | `5.0` |
 | `connection.buffer_size` | Puffergröße für TCP-Weiterleitung | `65536` |
 | `logging.level` | Logging-Level (`DEBUG`, `INFO`, ...) | `INFO` |
@@ -127,6 +133,44 @@ Wichtige Einordnung:
 - `minecraft_status` ist protokollnäher, kann aber je nach Server/Proxy/Version empfindlicher reagieren.
 - `fail_after` verhindert sofortiges Umschalten bei einzelnen Kurzstörungen.
 - `recover_after` verhindert zu frühes Zurückschalten und reduziert Flapping.
+
+## Velocity / Backend-Healthcheck
+
+Wenn MAIN auf Velocity zeigt, beweist ein reiner TCP-Check oft nur, dass Velocity läuft – nicht, dass das eigentliche Backend erreichbar ist.
+
+- `main.host` / `main.port` = Routing-Ziel für Spieler bei gesundem MAIN.
+- `healthcheck.target_host` / `healthcheck.target_port` = separates Prüfziel für die Gesundheitsentscheidung.
+
+Beispiel (zu Velocity routen, echtes Backend prüfen):
+
+```toml
+[main]
+host = "127.0.0.1"
+port = 25564
+
+[fallback]
+host = "127.0.0.1"
+port = 25566
+
+[healthcheck]
+mode = "minecraft_status"
+target_host = "100.64.0.10"
+target_port = 25567
+protocol_version = 767
+require_valid_json = true
+log_status_details = false
+interval_seconds = 3.0
+timeout_seconds = 2.0
+fail_after = 2
+recover_after = 2
+```
+
+Hinweise:
+- `protocol_version = 767` ist der Default und kann bei Bedarf angepasst werden.
+- `require_valid_json = true` erzwingt eine echte JSON-Statusantwort. Bei `false` reicht ein gültiger Status-Pakettyp.
+- `log_status_details = true` protokolliert Version/Spieler/Latenz und kann bei kurzem Intervall viel Log erzeugen.
+- Backend muss Status-Pings erlauben (`enable-status=true` in `server.properties`).
+- `nc -vz` zeigt nur TCP-Erreichbarkeit; `minecraft_status` prüft Minecraft-typisches Statusverhalten.
 
 ## Start
 

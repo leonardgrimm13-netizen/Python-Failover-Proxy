@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 import argparse
 import asyncio
+import json
 import logging
 import signal
 import socket
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -17,6 +19,9 @@ except ModuleNotFoundError:
 DEFAULT_CONFIG_PATH = Path("config.toml")
 VALID_HEALTH_CHECK_MODES = {"tcp", "minecraft_status"}
 VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+MAX_VARINT_BYTES = 5
+MAX_STATUS_JSON_BYTES = 262144
+MAX_PACKET_BYTES = MAX_STATUS_JSON_BYTES + 4096
 
 log = logging.getLogger("mc-failover")
 
@@ -44,6 +49,22 @@ class HealthCheckConfig:
     timeout_seconds: float
     fail_after: int
     recover_after: int
+    target_host: Optional[str]
+    target_port: Optional[int]
+    protocol_version: int
+    status_hostname: Optional[str]
+    require_valid_json: bool
+    log_status_details: bool
+
+
+@dataclass(frozen=True)
+class HealthCheckResult:
+    ok: bool
+    reason: str
+    latency_ms: Optional[float] = None
+    version_name: Optional[str] = None
+    players_online: Optional[int] = None
+    players_max: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -125,6 +146,10 @@ def _read_required(section_data: dict[str, Any], section: str, key: str) -> Any:
     return section_data[key]
 
 
+def _read_optional(section_data: dict[str, Any], key: str, default: Any = None) -> Any:
+    return section_data.get(key, default)
+
+
 def load_config(path: Path) -> AppConfig:
     if not path.exists():
         raise ConfigError(f"Konfigurationsdatei nicht gefunden: {path}")
@@ -166,6 +191,12 @@ def load_config(path: Path) -> AppConfig:
             timeout_seconds=_read_required(healthcheck, "healthcheck", "timeout_seconds"),
             fail_after=_read_required(healthcheck, "healthcheck", "fail_after"),
             recover_after=_read_required(healthcheck, "healthcheck", "recover_after"),
+            target_host=_read_optional(healthcheck, "target_host"),
+            target_port=_read_optional(healthcheck, "target_port"),
+            protocol_version=_read_optional(healthcheck, "protocol_version", 767),
+            status_hostname=_read_optional(healthcheck, "status_hostname"),
+            require_valid_json=_read_optional(healthcheck, "require_valid_json", True),
+            log_status_details=_read_optional(healthcheck, "log_status_details", False),
         ),
         connection=ConnectionConfig(
             timeout_seconds=_read_required(connection, "connection", "timeout_seconds"),
@@ -221,6 +252,26 @@ def validate_config(config: AppConfig) -> None:
     if not isinstance(config.logging.level, str) or config.logging.level.upper() not in VALID_LOG_LEVELS:
         raise ConfigError("logging.level muss DEBUG, INFO, WARNING, ERROR oder CRITICAL sein.")
 
+    if config.healthcheck.target_host is not None:
+        if not isinstance(config.healthcheck.target_host, str) or not config.healthcheck.target_host.strip():
+            raise ConfigError("healthcheck.target_host muss ein nicht-leerer String sein, falls gesetzt.")
+
+    if config.healthcheck.target_port is not None:
+        _validate_port("healthcheck.target_port", config.healthcheck.target_port)
+
+    if not _is_int(config.healthcheck.protocol_version) or config.healthcheck.protocol_version < 1:
+        raise ConfigError("healthcheck.protocol_version muss ein Integer >= 1 sein.")
+
+    if config.healthcheck.status_hostname is not None:
+        if not isinstance(config.healthcheck.status_hostname, str) or not config.healthcheck.status_hostname.strip():
+            raise ConfigError("healthcheck.status_hostname muss ein nicht-leerer String sein, falls gesetzt.")
+
+    if not isinstance(config.healthcheck.require_valid_json, bool):
+        raise ConfigError("healthcheck.require_valid_json muss bool sein.")
+
+    if not isinstance(config.healthcheck.log_status_details, bool):
+        raise ConfigError("healthcheck.log_status_details muss bool sein.")
+
     def _normalize_host(host: str) -> str:
         return host.strip().lower()
 
@@ -229,21 +280,29 @@ def validate_config(config: AppConfig) -> None:
     loopback_or_any_v6 = {"::1", "localhost", "::"}
     listen_host = _normalize_host(config.proxy.listen_host)
 
-    def _validate_loop(name: str, target: TargetConfig) -> None:
+    def _validate_loop(name: str, target: TargetConfig, *, healthcheck_target: bool = False) -> None:
         normalized_target_host = _normalize_host(target.host)
+        loop_text = "Healthcheck-Ziel erzeugt" if healthcheck_target else f"{name} erzeugt"
         if (normalized_target_host, target.port) == (listen_host, config.proxy.listen_port):
-            raise ConfigError(f"{name} zeigt exakt auf den Proxy-Listener und erzeugt eine Proxy-Schleife.")
+            raise ConfigError(f"{loop_text} exakt eine Proxy-Schleife zum Listener.")
         if target.port != config.proxy.listen_port:
             return
         if listen_host in loopback_hosts_v4 and normalized_target_host in loopback_hosts_v4:
-            raise ConfigError(f"{name} nutzt denselben Port wie der Listener auf Loopback. Proxy-Schleife.")
+            raise ConfigError(f"{loop_text} auf Loopback denselben Port wie der Listener.")
         if listen_host == "0.0.0.0" and normalized_target_host in loopback_or_any_v4:
-            raise ConfigError(f"{name} erzeugt bei LISTEN_HOST=0.0.0.0 wahrscheinlich eine Proxy-Schleife.")
+            raise ConfigError(f"{loop_text} bei LISTEN_HOST=0.0.0.0 wahrscheinlich eine Proxy-Schleife.")
         if listen_host == "::" and normalized_target_host in loopback_or_any_v6:
-            raise ConfigError(f"{name} erzeugt bei LISTEN_HOST=:: wahrscheinlich eine Proxy-Schleife.")
+            raise ConfigError(f"{loop_text} bei LISTEN_HOST=:: wahrscheinlich eine Proxy-Schleife.")
 
     _validate_loop("MAIN", config.main)
     _validate_loop("FALLBACK", config.fallback)
+    _validate_loop("HEALTHCHECK", get_healthcheck_target(config), healthcheck_target=True)
+
+
+def get_healthcheck_target(config: AppConfig) -> TargetConfig:
+    host = config.healthcheck.target_host or config.main.host
+    port = config.healthcheck.target_port or config.main.port
+    return TargetConfig(host=host, port=port)
 
 
 async def close_writer(writer: Optional[asyncio.StreamWriter]) -> None:
@@ -268,14 +327,16 @@ def set_tcp_nodelay(writer: Optional[asyncio.StreamWriter]) -> None:
         log.debug("TCP_NODELAY konnte nicht gesetzt werden: %s", exc)
 
 
-async def tcp_health_check(host: str, port: int, timeout: float) -> bool:
+async def tcp_health_check(host: str, port: int, timeout: float) -> HealthCheckResult:
     writer = None
+    started = time.monotonic()
     try:
         _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
-        return True
+        latency_ms = (time.monotonic() - started) * 1000.0
+        return HealthCheckResult(ok=True, reason="tcp_connect_ok", latency_ms=latency_ms)
     except Exception as exc:
-        log.debug("TCP-Healthcheck fehlgeschlagen für %s:%s: %s", host, port, exc)
-        return False
+        log.debug("TCP-Healthcheck fehlgeschlagen für %s:%s: %s", host, port, exc, exc_info=True)
+        return HealthCheckResult(ok=False, reason=f"tcp_connect_failed: {exc.__class__.__name__}")
     finally:
         await close_writer(writer)
 
@@ -297,7 +358,7 @@ def write_varint(value: int) -> bytes:
 
 async def read_varint(reader: asyncio.StreamReader) -> int:
     value = 0
-    for position in range(5):
+    for position in range(MAX_VARINT_BYTES):
         current_byte = await reader.readexactly(1)
         byte_value = current_byte[0]
         value |= (byte_value & 0x7F) << (7 * position)
@@ -306,8 +367,7 @@ async def read_varint(reader: asyncio.StreamReader) -> int:
     raise ValueError("VarInt ist zu lang")
 
 
-def make_minecraft_status_packet(host: str, port: int) -> bytes:
-    protocol_version = 47
+def make_minecraft_status_packet(host: str, port: int, protocol_version: int) -> bytes:
     server_host = host.encode("utf-8")
     packet_data = bytearray()
     packet_data += write_varint(0x00)
@@ -322,26 +382,100 @@ def make_minecraft_status_packet(host: str, port: int) -> bytes:
     return handshake_packet + request_packet
 
 
-async def minecraft_status_health_check(host: str, port: int, timeout: float) -> bool:
+async def minecraft_status_health_check(
+    host: str,
+    port: int,
+    timeout: float,
+    protocol_version: int,
+    status_hostname: Optional[str],
+    require_valid_json: bool,
+) -> HealthCheckResult:
     writer = None
+    started = time.monotonic()
     try:
         reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
-        writer.write(make_minecraft_status_packet(host, port))
+        handshake_host = status_hostname or host
+        writer.write(make_minecraft_status_packet(handshake_host, port, protocol_version))
         await asyncio.wait_for(writer.drain(), timeout=timeout)
-        _packet_length = await asyncio.wait_for(read_varint(reader), timeout=timeout)
-        packet_id = await asyncio.wait_for(read_varint(reader), timeout=timeout)
-        return packet_id == 0x00
-    except Exception as exc:
-        log.debug("Minecraft-Status-Healthcheck fehlgeschlagen für %s:%s: %s", host, port, exc)
-        return False
+
+        packet_length = await asyncio.wait_for(read_varint(reader), timeout=timeout)
+        if packet_length < 1 or packet_length > MAX_PACKET_BYTES:
+            return HealthCheckResult(ok=False, reason="invalid_packet_length")
+
+        packet_payload = await asyncio.wait_for(reader.readexactly(packet_length), timeout=timeout)
+        payload_reader = asyncio.StreamReader()
+        payload_reader.feed_data(packet_payload)
+        payload_reader.feed_eof()
+
+        packet_id = await read_varint(payload_reader)
+        if packet_id != 0x00:
+            return HealthCheckResult(ok=False, reason=f"invalid_packet_id:{packet_id}")
+
+        latency_ms = (time.monotonic() - started) * 1000.0
+        if not require_valid_json:
+            return HealthCheckResult(ok=True, reason="status_packet_ok", latency_ms=latency_ms)
+
+        json_length = await read_varint(payload_reader)
+        if json_length < 0 or json_length > MAX_STATUS_JSON_BYTES:
+            return HealthCheckResult(ok=False, reason="status_json_too_large_or_negative")
+
+        status_json = await payload_reader.readexactly(json_length)
+        try:
+            decoded_status = status_json.decode("utf-8")
+        except UnicodeDecodeError:
+            return HealthCheckResult(ok=False, reason="status_json_invalid_utf8")
+
+        try:
+            parsed = json.loads(decoded_status)
+        except json.JSONDecodeError:
+            return HealthCheckResult(ok=False, reason="status_json_invalid_json")
+        if not isinstance(parsed, dict):
+            return HealthCheckResult(ok=False, reason="status_json_not_object")
+
+        version_name = None
+        players_online = None
+        players_max = None
+        version_data = parsed.get("version")
+        if isinstance(version_data, dict):
+            name = version_data.get("name")
+            if isinstance(name, str):
+                version_name = name
+        players_data = parsed.get("players")
+        if isinstance(players_data, dict):
+            online = players_data.get("online")
+            maximum = players_data.get("max")
+            if isinstance(online, int):
+                players_online = online
+            if isinstance(maximum, int):
+                players_max = maximum
+
+        return HealthCheckResult(
+            ok=True,
+            reason="status_json_ok",
+            latency_ms=latency_ms,
+            version_name=version_name,
+            players_online=players_online,
+            players_max=players_max,
+        )
+    except (asyncio.TimeoutError, ConnectionError, OSError, asyncio.IncompleteReadError, ValueError, json.JSONDecodeError) as exc:
+        log.debug("Minecraft-Status-Healthcheck fehlgeschlagen für %s:%s: %s", host, port, exc, exc_info=True)
+        return HealthCheckResult(ok=False, reason=f"status_check_failed: {exc.__class__.__name__}")
     finally:
         await close_writer(writer)
 
 
-async def check_main_server(config: AppConfig) -> bool:
+async def check_main_server(config: AppConfig) -> HealthCheckResult:
+    target = get_healthcheck_target(config)
     if config.healthcheck.mode == "tcp":
-        return await tcp_health_check(config.main.host, config.main.port, config.healthcheck.timeout_seconds)
-    return await minecraft_status_health_check(config.main.host, config.main.port, config.healthcheck.timeout_seconds)
+        return await tcp_health_check(target.host, target.port, config.healthcheck.timeout_seconds)
+    return await minecraft_status_health_check(
+        target.host,
+        target.port,
+        config.healthcheck.timeout_seconds,
+        config.healthcheck.protocol_version,
+        config.healthcheck.status_hostname,
+        config.healthcheck.require_valid_json,
+    )
 
 
 def choose_target(config: AppConfig, health: HealthState) -> Target:
@@ -393,15 +527,29 @@ async def handle_client(config: AppConfig, health: HealthState, client_reader: a
 
 
 async def health_loop(config: AppConfig, health: HealthState, stop_event: asyncio.Event) -> None:
-    log.info("Healthcheck gestartet (%s): %s:%s", config.healthcheck.mode, config.main.host, config.main.port)
+    target = get_healthcheck_target(config)
+    log.info("Healthcheck gestartet (%s): %s:%s", config.healthcheck.mode, target.host, target.port)
     while not stop_event.is_set():
         try:
-            ok = await check_main_server(config)
-            changed_to = health.report(ok)
+            result = await check_main_server(config)
+            changed_to = health.report(result.ok)
+            if config.healthcheck.log_status_details and result.ok:
+                log.info(
+                    "Healthcheck ok (%s): latency=%.1fms version=%s players=%s/%s reason=%s",
+                    config.healthcheck.mode,
+                    result.latency_ms if result.latency_ms is not None else -1,
+                    result.version_name or "n/a",
+                    result.players_online if result.players_online is not None else "n/a",
+                    result.players_max if result.players_max is not None else "n/a",
+                    result.reason,
+                )
+            elif not result.ok:
+                log.debug("Healthcheck nicht ok: %s", result.reason)
+
             if changed_to is True:
-                log.warning("Hauptserver wieder erreichbar. Neue Spieler gehen auf MAIN.")
+                log.warning("FALLBACK -> MAIN (%s:%s): %s", target.host, target.port, result.reason)
             elif changed_to is False:
-                log.error("Hauptserver nicht erreichbar. Neue Spieler gehen auf FALLBACK.")
+                log.error("MAIN -> FALLBACK (%s:%s): %s", target.host, target.port, result.reason)
         except Exception as exc:
             log.exception("Unerwarteter Fehler im Healthcheck-Loop: %s", exc)
         try:
@@ -435,11 +583,12 @@ async def run() -> int:
         except NotImplementedError:
             log.warning("Signal-Handler für %s auf dieser Plattform nicht unterstützt.", sig.name)
 
-    initial_ok = await check_main_server(config)
-    health.set_initial_state(initial_ok)
+    initial_result = await check_main_server(config)
+    health.set_initial_state(initial_result.ok)
+    health_target = get_healthcheck_target(config)
 
     log.info(
-        "Proxy-Start: listen=%s:%s, main=%s:%s, fallback=%s:%s, mode=%s",
+        "Proxy-Start:\n  listen=%s:%s\n  route_main=%s:%s\n  route_fallback=%s:%s\n  healthcheck=%s %s:%s",
         config.proxy.listen_host,
         config.proxy.listen_port,
         config.main.host,
@@ -447,11 +596,13 @@ async def run() -> int:
         config.fallback.host,
         config.fallback.port,
         config.healthcheck.mode,
+        health_target.host,
+        health_target.port,
     )
     if health.main_healthy:
-        log.info("Startzustand: MAIN ist erreichbar.")
+        log.info("Startzustand: MAIN ist erreichbar (%s).", initial_result.reason)
     else:
-        log.warning("Startzustand: MAIN ist nicht erreichbar. Fallback aktiv.")
+        log.warning("Startzustand: MAIN ist nicht erreichbar (%s). Fallback aktiv.", initial_result.reason)
 
     try:
         server = await asyncio.start_server(
