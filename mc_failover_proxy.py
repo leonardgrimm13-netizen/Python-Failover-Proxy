@@ -222,14 +222,6 @@ def validate_config() -> None:
     _validate_port("MAIN_PORT", MAIN_PORT)
     _validate_port("FALLBACK_PORT", FALLBACK_PORT)
 
-    for key, value in (
-        ("CHECK_INTERVAL_SECONDS", CHECK_INTERVAL_SECONDS),
-        ("CHECK_TIMEOUT_SECONDS", CHECK_TIMEOUT_SECONDS),
-        ("CONNECTION_TIMEOUT_SECONDS", CONNECTION_TIMEOUT_SECONDS),
-    ):
-        if value <= 0:
-            raise ValueError(f"{key} muss > 0 sein (aktuell: {value!r}).")
-
     for key, value in (("FAIL_AFTER", FAIL_AFTER), ("RECOVER_AFTER", RECOVER_AFTER)):
         if not isinstance(value, int) or value < 1:
             raise ValueError(f"{key} muss ein Integer >= 1 sein (aktuell: {value!r}).")
@@ -239,6 +231,30 @@ def validate_config() -> None:
 
     if HEALTH_CHECK_MODE not in {"tcp", "minecraft_status"}:
         raise ValueError("HEALTH_CHECK_MODE muss 'tcp' oder 'minecraft_status' sein.")
+
+    for host_name, host_value in (
+        ("LISTEN_HOST", LISTEN_HOST),
+        ("MAIN_HOST", MAIN_HOST),
+        ("FALLBACK_HOST", FALLBACK_HOST),
+    ):
+        if not isinstance(host_value, str) or not host_value.strip():
+            raise ValueError(
+                f"{host_name} muss ein nicht-leerer String sein (aktuell: {host_value!r})."
+            )
+
+    for key, value in (
+        ("CHECK_INTERVAL_SECONDS", CHECK_INTERVAL_SECONDS),
+        ("CHECK_TIMEOUT_SECONDS", CHECK_TIMEOUT_SECONDS),
+        ("CONNECTION_TIMEOUT_SECONDS", CONNECTION_TIMEOUT_SECONDS),
+    ):
+        if not isinstance(value, (int, float)) or value <= 0:
+            raise ValueError(f"{key} muss int oder float und > 0 sein (aktuell: {value!r}).")
+
+    valid_log_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+    if not isinstance(LOG_LEVEL, str) or LOG_LEVEL.upper() not in valid_log_levels:
+        raise ValueError(
+            "LOG_LEVEL muss ein gültiges Logging-Level sein (DEBUG, INFO, WARNING, ERROR, CRITICAL)."
+        )
 
     def _normalize_host(host: str) -> str:
         return host.strip().lower()

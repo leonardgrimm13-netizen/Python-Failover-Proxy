@@ -16,6 +16,32 @@ class DummyReader:
         return out
 
 
+class DummyConfigPatchMixin:
+    PATCH_KEYS = (
+        "LISTEN_HOST",
+        "LISTEN_PORT",
+        "MAIN_HOST",
+        "MAIN_PORT",
+        "FALLBACK_HOST",
+        "FALLBACK_PORT",
+        "HEALTH_CHECK_MODE",
+        "CHECK_INTERVAL_SECONDS",
+        "CHECK_TIMEOUT_SECONDS",
+        "CONNECTION_TIMEOUT_SECONDS",
+        "FAIL_AFTER",
+        "RECOVER_AFTER",
+        "BUFFER_SIZE",
+        "LOG_LEVEL",
+    )
+
+    def setUp(self):
+        self.old_values = {key: getattr(m, key) for key in self.PATCH_KEYS}
+
+    def tearDown(self):
+        for key, value in self.old_values.items():
+            setattr(m, key, value)
+
+
 class VarIntTests(unittest.IsolatedAsyncioTestCase):
     async def test_varint_roundtrip(self):
         for value in (0, 1, 127, 128, 255, 2097151):
@@ -28,7 +54,7 @@ class VarIntTests(unittest.IsolatedAsyncioTestCase):
             await m.read_varint(DummyReader(b"\x80\x80\x80\x80\x80"))
 
 
-class HealthStateTests(unittest.TestCase):
+class HealthStateTests(DummyConfigPatchMixin, unittest.TestCase):
     def test_initial_healthy(self):
         state = m.HealthState()
         state.set_initial_state(True)
@@ -40,15 +66,19 @@ class HealthStateTests(unittest.TestCase):
         self.assertFalse(state.main_healthy)
 
     def test_failover_threshold(self):
+        m.FAIL_AFTER = 3
         state = m.HealthState()
         state.set_initial_state(True)
-        self.assertIsNone(state.report(False))
+        for _ in range(m.FAIL_AFTER - 1):
+            self.assertIsNone(state.report(False))
         self.assertFalse(state.report(False))
 
     def test_recovery_threshold(self):
+        m.RECOVER_AFTER = 3
         state = m.HealthState()
         state.set_initial_state(False)
-        self.assertIsNone(state.report(True))
+        for _ in range(m.RECOVER_AFTER - 1):
+            self.assertIsNone(state.report(True))
         self.assertTrue(state.report(True))
 
 
@@ -65,22 +95,7 @@ class TargetTests(unittest.TestCase):
             m.health = old
 
 
-class ConfigValidationTests(unittest.TestCase):
-    def setUp(self):
-        self.old_values = {
-            "LISTEN_HOST": m.LISTEN_HOST,
-            "LISTEN_PORT": m.LISTEN_PORT,
-            "MAIN_HOST": m.MAIN_HOST,
-            "MAIN_PORT": m.MAIN_PORT,
-            "FALLBACK_HOST": m.FALLBACK_HOST,
-            "FALLBACK_PORT": m.FALLBACK_PORT,
-            "HEALTH_CHECK_MODE": m.HEALTH_CHECK_MODE,
-        }
-
-    def tearDown(self):
-        for key, value in self.old_values.items():
-            setattr(m, key, value)
-
+class ConfigValidationTests(DummyConfigPatchMixin, unittest.TestCase):
     def test_validate_config_ok(self):
         m.LISTEN_HOST = "0.0.0.0"
         m.LISTEN_PORT = 25565
@@ -92,6 +107,24 @@ class ConfigValidationTests(unittest.TestCase):
 
     def test_invalid_health_check_mode(self):
         m.HEALTH_CHECK_MODE = "invalid"
+        with self.assertRaises(ValueError):
+            m.validate_config()
+
+    def test_invalid_host_values(self):
+        for key, value in (("LISTEN_HOST", ""), ("MAIN_HOST", None), ("FALLBACK_HOST", "  ")):
+            with self.subTest(key=key, value=value):
+                setattr(m, key, value)
+                with self.assertRaises(ValueError):
+                    m.validate_config()
+                setattr(m, key, self.old_values[key])
+
+    def test_invalid_timeout_type(self):
+        m.CHECK_INTERVAL_SECONDS = "3"
+        with self.assertRaises(ValueError):
+            m.validate_config()
+
+    def test_invalid_log_level(self):
+        m.LOG_LEVEL = "NOPE"
         with self.assertRaises(ValueError):
             m.validate_config()
 
