@@ -21,6 +21,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
       - name: Compile script
         run: python -m py_compile mc_failover_proxy.py
 
