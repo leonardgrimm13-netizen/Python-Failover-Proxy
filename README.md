@@ -291,6 +291,22 @@ python3 -m py_compile mc_failover_proxy.py
 python3 -m compileall .
 ```
 
+## Admin CLI checks (no listener start)
+
+These commands load/validate config and run targeted checks **without starting** the productive proxy listener. Useful before `systemctl enable/start`, and for VPS/Tailscale/Velocity/HAProxy debugging.
+
+```bash
+python3 mc_failover_proxy.py --config config.toml --check-config
+python3 mc_failover_proxy.py --config config.toml --print-effective-config
+python3 mc_failover_proxy.py --config config.toml --test-main
+python3 mc_failover_proxy.py --config config.toml --test-fallback
+python3 mc_failover_proxy.py --config config.toml --test-healthcheck
+```
+
+- `--test-main`: checks pure TCP reachability of the MAIN routing target.
+- `--test-fallback`: checks pure TCP reachability of the FALLBACK routing target.
+- `--test-healthcheck`: runs exactly the configured healthcheck decision path (`tcp` or `minecraft_status`).
+
 ## Troubleshooting
 
 - `config.toml` not found:
