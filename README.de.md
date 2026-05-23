@@ -305,3 +305,42 @@ python3 -m compileall .
 ---
 
 [English](README.md)
+
+## PROXY Protocol
+
+Dieser Proxy unterstützt **optional PROXY protocol v1** (nicht v2) für eingehende und/oder Upstream-Verbindungen.
+
+- `accept = true`: erwartet einen PROXY-v1-Header vom direkten Downstream-Peer.
+- `send = true`: sendet vor den Minecraft-Daten einen PROXY-v1-Header an MAIN/FALLBACK.
+- `trusted_proxy_ips`: erlaubte direkte Peer-IP/CIDR-Liste für `accept = true`.
+
+⚠️ Sicherheitswarnung: `accept = true` niemals ungeschützt auf einem Internet-Socket aktivieren; immer mit trusted Peers/Firewall absichern.
+
+Beispiel 1 (nur akzeptieren):
+```toml
+[proxy_protocol]
+accept = true
+send = false
+version = 1
+trusted_proxy_ips = ["100.64.0.1", "127.0.0.1"]
+```
+
+Beispiel 2 (akzeptieren + echte Client-IP an Velocity weitergeben):
+```toml
+[proxy_protocol]
+accept = true
+send = true
+version = 1
+trusted_proxy_ips = ["100.64.0.1"]
+```
+
+Prüfe die Velocity-Dokumentation für die passende PROXY-protocol Einstellung.
+
+HAProxy-Backend-Beispiel (v1):
+```haproxy
+backend mc_failover
+    mode tcp
+    server failover 100.64.0.20:25565 send-proxy
+```
+
+`send-proxy-v2` hier **nicht** verwenden; dieses Projekt unterstützt nur **v1**.

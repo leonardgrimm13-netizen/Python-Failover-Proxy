@@ -6,6 +6,7 @@ import logging
 import random
 import signal
 import socket
+import ipaddress
 import sys
 import time
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 MAX_VARINT_BYTES = 5
 MAX_STATUS_JSON_BYTES = 262144
 MAX_PACKET_BYTES = MAX_STATUS_JSON_BYTES + 4096
+MAX_PROXY_V1_HEADER_BYTES = 256
 
 log = logging.getLogger("mc-failover")
 
@@ -84,6 +86,16 @@ class LoggingConfig:
     level: str
 
 
+
+
+@dataclass(frozen=True)
+class ProxyProtocolConfig:
+    accept: bool
+    send: bool
+    version: int
+    trusted_proxy_ips: tuple[str, ...]
+
+
 @dataclass(frozen=True)
 class AppConfig:
     proxy: ProxyConfig
@@ -92,6 +104,16 @@ class AppConfig:
     healthcheck: HealthCheckConfig
     connection: ConnectionConfig
     logging: LoggingConfig
+    proxy_protocol: ProxyProtocolConfig
+
+
+@dataclass(frozen=True)
+class ProxyProtocolInfo:
+    source_ip: str
+    destination_ip: str
+    source_port: int
+    destination_port: int
+    family: str
 
 
 @dataclass(frozen=True)
@@ -190,6 +212,9 @@ def load_config(path: Path) -> AppConfig:
     healthcheck = _read_section(raw, "healthcheck")
     connection = _read_section(raw, "connection")
     logging_cfg = _read_section(raw, "logging")
+    proxy_protocol = _read_optional(raw, "proxy_protocol", {})
+    if not isinstance(proxy_protocol, dict):
+        raise ConfigError("Sektion [proxy_protocol] muss ein TOML-Table sein.")
 
     config = AppConfig(
         proxy=ProxyConfig(
@@ -227,6 +252,12 @@ def load_config(path: Path) -> AppConfig:
             max_connections=_read_optional(connection, "max_connections", 4096),
         ),
         logging=LoggingConfig(level=_clean_required_string(_read_required(logging_cfg, "logging", "level"))),
+        proxy_protocol=ProxyProtocolConfig(
+            accept=_read_optional(proxy_protocol, "accept", False),
+            send=_read_optional(proxy_protocol, "send", False),
+            version=_read_optional(proxy_protocol, "version", 1),
+            trusted_proxy_ips=tuple(_read_optional(proxy_protocol, "trusted_proxy_ips", [])),
+        ),
     )
     validate_config(config)
     return config
@@ -311,6 +342,25 @@ def validate_config(config: AppConfig) -> None:
 
     if not isinstance(config.healthcheck.log_status_details, bool):
         raise ConfigError("healthcheck.log_status_details muss bool sein.")
+    if not isinstance(config.proxy_protocol.accept, bool):
+        raise ConfigError("proxy_protocol.accept muss bool sein.")
+    if not isinstance(config.proxy_protocol.send, bool):
+        raise ConfigError("proxy_protocol.send muss bool sein.")
+    if not _is_int(config.proxy_protocol.version) or config.proxy_protocol.version != 1:
+        raise ConfigError("proxy_protocol.version muss 1 sein (nur PROXY protocol v1 wird unterstützt).")
+    if not isinstance(config.proxy_protocol.trusted_proxy_ips, tuple):
+        raise ConfigError("proxy_protocol.trusted_proxy_ips muss eine Liste von IP/CIDR-Einträgen sein.")
+    for entry in config.proxy_protocol.trusted_proxy_ips:
+        if not isinstance(entry, str) or not entry.strip():
+            raise ConfigError("proxy_protocol.trusted_proxy_ips enthält einen ungültigen Eintrag.")
+        candidate = entry.strip()
+        try:
+            if "/" in candidate:
+                ipaddress.ip_network(candidate, strict=False)
+            else:
+                ipaddress.ip_address(candidate)
+        except ValueError as exc:
+            raise ConfigError(f"Ungültiger Eintrag in proxy_protocol.trusted_proxy_ips: {entry!r}") from exc
 
     def _normalize_host(host: str) -> str:
         return host.strip().lower()
@@ -559,6 +609,73 @@ async def pipe(source: asyncio.StreamReader, destination: asyncio.StreamWriter, 
         log.debug("Pipe-Fehler %s: %s", direction_name, exc)
 
 
+def is_trusted_proxy(peer_ip: str, trusted_entries: tuple[str, ...]) -> bool:
+    if not trusted_entries:
+        return True
+    try:
+        peer_addr = ipaddress.ip_address(peer_ip)
+    except ValueError:
+        return False
+    for entry in trusted_entries:
+        candidate = entry.strip()
+        if "/" in candidate:
+            if peer_addr in ipaddress.ip_network(candidate, strict=False):
+                return True
+        elif peer_addr == ipaddress.ip_address(candidate):
+            return True
+    return False
+
+
+def parse_proxy_v1_header(line: bytes) -> ProxyProtocolInfo:
+    if len(line) > MAX_PROXY_V1_HEADER_BYTES:
+        raise ValueError("PROXY header zu lang")
+    if not line.startswith(b"PROXY ") or not line.endswith(b"\r\n"):
+        raise ValueError("Ungültiger PROXY v1 Header")
+    parts = line[:-2].decode("ascii").split(" ")
+    if len(parts) < 2:
+        raise ValueError("Ungültiger PROXY v1 Header")
+    if parts[1] == "UNKNOWN":
+        return ProxyProtocolInfo("", "", 0, 0, "UNKNOWN")
+    if len(parts) != 6 or parts[1] not in {"TCP4", "TCP6"}:
+        raise ValueError("Ungültiger PROXY v1 Header")
+    family, src_ip, dst_ip, src_port_raw, dst_port_raw = parts[1], parts[2], parts[3], parts[4], parts[5]
+    src_addr = ipaddress.ip_address(src_ip)
+    dst_addr = ipaddress.ip_address(dst_ip)
+    if family == "TCP4" and (src_addr.version != 4 or dst_addr.version != 4):
+        raise ValueError("TCP4 benötigt IPv4")
+    if family == "TCP6" and (src_addr.version != 6 or dst_addr.version != 6):
+        raise ValueError("TCP6 benötigt IPv6")
+    src_port = int(src_port_raw)
+    dst_port = int(dst_port_raw)
+    if not (1 <= src_port <= 65535 and 1 <= dst_port <= 65535):
+        raise ValueError("Ungültiger Port")
+    return ProxyProtocolInfo(str(src_addr), str(dst_addr), src_port, dst_port, family)
+
+
+async def read_proxy_v1_header(reader: asyncio.StreamReader, timeout: float) -> ProxyProtocolInfo:
+    line = await asyncio.wait_for(reader.readuntil(b"\r\n"), timeout=timeout)
+    if len(line) > MAX_PROXY_V1_HEADER_BYTES:
+        raise ValueError("PROXY header zu lang")
+    return parse_proxy_v1_header(line)
+
+
+def build_proxy_v1_header(source_ip: str, destination_ip: str, source_port: int, destination_port: int) -> bytes:
+    src = ipaddress.ip_address(source_ip)
+    dst = ipaddress.ip_address(destination_ip)
+    if src.version != dst.version:
+        raise ValueError("Source und Destination IP-Version muss gleich sein")
+    if not isinstance(source_port, int) or isinstance(source_port, bool) or not (1 <= source_port <= 65535):
+        raise ValueError("Ungültiger source_port")
+    if not isinstance(destination_port, int) or isinstance(destination_port, bool) or not (1 <= destination_port <= 65535):
+        raise ValueError("Ungültiger destination_port")
+    family = "TCP4" if src.version == 4 else "TCP6"
+    return f"PROXY {family} {src} {dst} {source_port} {destination_port}\r\n".encode("ascii")
+
+
+def build_proxy_unknown_header() -> bytes:
+    return b"PROXY UNKNOWN\r\n"
+
+
 class ConnectionLimiter:
     def __init__(self, max_connections: int) -> None:
         self.max_connections = max_connections
@@ -580,6 +697,8 @@ class ConnectionLimiter:
 
 async def handle_client(config: AppConfig, health: HealthState, limiter: ConnectionLimiter, client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter) -> None:
     peer = client_writer.get_extra_info("peername")
+    peer_ip = peer[0] if isinstance(peer, tuple) and len(peer) >= 2 else None
+    peer_port = peer[1] if isinstance(peer, tuple) and len(peer) >= 2 else None
     if not await limiter.try_acquire():
         log.warning("Verbindung von %s abgelehnt: max_connections erreicht", peer)
         await close_writer(client_writer)
@@ -588,7 +707,20 @@ async def handle_client(config: AppConfig, health: HealthState, limiter: Connect
     target = choose_target(config, health)
     log.info("Neue Verbindung von %s -> %s %s:%s", peer, target.name, target.host, target.port)
     server_writer = None
+    proxy_info: Optional[ProxyProtocolInfo] = None
     try:
+        if config.proxy_protocol.accept:
+            if peer_ip is None or peer_port is None:
+                log.warning("PROXY protocol aktiviert, aber peername ist ungültig: %s", peer)
+                return
+            if not is_trusted_proxy(str(peer_ip), config.proxy_protocol.trusted_proxy_ips):
+                log.warning("PROXY protocol rejected from untrusted peer %s", peer_ip)
+                return
+            try:
+                proxy_info = await read_proxy_v1_header(client_reader, config.connection.timeout_seconds)
+            except Exception as exc:
+                log.warning("Ungültiger oder fehlender PROXY v1 Header von %s: %s", peer_ip, exc)
+                return
         try:
             server_reader, server_writer = await asyncio.wait_for(
                 asyncio.open_connection(target.host, target.port), timeout=config.connection.timeout_seconds
@@ -626,6 +758,25 @@ async def handle_client(config: AppConfig, health: HealthState, limiter: Connect
         if config.connection.tcp_keepalive:
             set_tcp_keepalive(client_writer)
             set_tcp_keepalive(server_writer)
+        if config.proxy_protocol.send:
+            backend_peer = server_writer.get_extra_info("peername")
+            backend_ip = backend_peer[0] if isinstance(backend_peer, tuple) and len(backend_peer) >= 2 else None
+            backend_port = backend_peer[1] if isinstance(backend_peer, tuple) and len(backend_peer) >= 2 else None
+            header = build_proxy_unknown_header()
+            if backend_ip is not None and backend_port is not None and peer_ip is not None and peer_port is not None:
+                src_ip = str(peer_ip)
+                src_port = int(peer_port)
+                if proxy_info is not None and proxy_info.family in {"TCP4", "TCP6"}:
+                    src_ip = proxy_info.source_ip
+                    src_port = proxy_info.source_port
+                try:
+                    header = build_proxy_v1_header(src_ip, str(backend_ip), src_port, int(backend_port))
+                except ValueError as exc:
+                    log.warning("Konnte PROXY Header nicht bauen, sende UNKNOWN: %s", exc)
+            else:
+                log.warning("Backend peername unvollständig, sende PROXY UNKNOWN")
+            server_writer.write(header)
+            await server_writer.drain()
         c2s = asyncio.create_task(pipe(client_reader, server_writer, "client -> server", config.connection.buffer_size, config.connection.idle_timeout_seconds))
         s2c = asyncio.create_task(pipe(server_reader, client_writer, "server -> client", config.connection.buffer_size, config.connection.idle_timeout_seconds))
         done, pending = await asyncio.wait({c2s, s2c}, return_when=asyncio.FIRST_COMPLETED)

@@ -61,3 +61,13 @@ max_connections = 4096
 
 [logging]
 level = "INFO"
+
+[proxy_protocol]
+# WARNING: Only enable if you understand PROXY protocol security implications.
+# accept=true should only be used behind a trusted HAProxy/reverse proxy.
+# Set trusted_proxy_ips to explicitly allow only your proxy peers.
+# send=true only if your upstream (e.g. Velocity) expects PROXY protocol v1.
+accept = false
+send = false
+version = 1
+trusted_proxy_ips = []

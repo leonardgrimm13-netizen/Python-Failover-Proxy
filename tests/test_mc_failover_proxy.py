@@ -64,6 +64,7 @@ class ConfigTests(unittest.TestCase):
             healthcheck=m.HealthCheckConfig("tcp", 3.0, 2.0, 2, 2, None, None, 767, None, True, False, 0.0),
             connection=m.ConnectionConfig(5.0, 65536, 300.0, False, False, 4096),
             logging=m.LoggingConfig("INFO"),
+            proxy_protocol=m.ProxyProtocolConfig(False, False, 1, ()),
         )
 
     def test_repo_config_toml_is_valid(self):
@@ -147,6 +148,19 @@ class ConfigTests(unittest.TestCase):
         self.assertIsNone(cfg.healthcheck.status_hostname)
         self.assertTrue(cfg.healthcheck.require_valid_json)
         self.assertFalse(cfg.healthcheck.log_status_details)
+        self.assertFalse(cfg.proxy_protocol.accept)
+        self.assertFalse(cfg.proxy_protocol.send)
+        self.assertEqual(cfg.proxy_protocol.version, 1)
+        self.assertEqual(cfg.proxy_protocol.trusted_proxy_ips, ())
+
+    def test_proxy_protocol_validation(self):
+        text = VALID_CONFIG_TOML + '\n[proxy_protocol]\naccept = true\nsend = true\nversion = 1\ntrusted_proxy_ips = ["127.0.0.1", "10.0.0.0/8"]\n'
+        cfg = m.load_config(self.write_temp_config(text))
+        self.assertTrue(cfg.proxy_protocol.accept)
+        self.assertEqual(cfg.proxy_protocol.trusted_proxy_ips, ("127.0.0.1", "10.0.0.0/8"))
+        bad = VALID_CONFIG_TOML + '\n[proxy_protocol]\nversion = 2\n'
+        with self.assertRaises(m.ConfigError):
+            m.load_config(self.write_temp_config(bad))
 
     def test_new_healthcheck_config_parsing(self):
         text = VALID_CONFIG_TOML.replace('mode = "tcp"', 'mode = "minecraft_status"').replace(
@@ -247,6 +261,14 @@ class CoreBehaviorTests(unittest.TestCase):
         state.set_initial_state(False)
         self.assertEqual(m.choose_target(cfg, state).name, "FALLBACK")
 
+    def test_proxy_protocol_helpers(self):
+        info = m.parse_proxy_v1_header(b"PROXY TCP4 203.0.113.10 198.51.100.20 54321 25565\r\n")
+        self.assertEqual(info.family, "TCP4")
+        self.assertEqual(info.source_ip, "203.0.113.10")
+        self.assertEqual(m.build_proxy_v1_header("203.0.113.10", "198.51.100.20", 54321, 25565), b"PROXY TCP4 203.0.113.10 198.51.100.20 54321 25565\r\n")
+        self.assertTrue(m.is_trusted_proxy("10.1.2.3", ("10.0.0.0/8",)))
+        self.assertFalse(m.is_trusted_proxy("203.0.113.10", ("10.0.0.0/8",)))
+
 
 class StatusProtocolTests(unittest.IsolatedAsyncioTestCase):
     async def test_varint_roundtrip_and_too_long(self):
@@ -264,6 +286,7 @@ class StatusProtocolTests(unittest.IsolatedAsyncioTestCase):
             healthcheck=m.HealthCheckConfig("tcp", 3, 2, 2, 2, None, None, 767, None, True, False, 0.0),
             connection=m.ConnectionConfig(5.0, 65536, 300.0, False, False, 4096),
             logging=m.LoggingConfig("INFO"),
+            proxy_protocol=m.ProxyProtocolConfig(False, False, 1, ()),
         )
         self.assertEqual(m.get_healthcheck_target(cfg), m.TargetConfig("127.0.0.1", 25564))
         cfg_h = m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", 3, 2, 2, 2, "10.0.0.2", None, 767, None, True, False, 0.0)})
@@ -352,6 +375,7 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 overrides.get("max_connections", 1),
             ),
             logging=m.LoggingConfig("INFO"),
+            proxy_protocol=m.ProxyProtocolConfig(False, False, 1, ()),
         )
 
     async def test_connection_limiter_accepts_then_rejects(self):
@@ -432,6 +456,34 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await r.read(1), b"")
         await m.close_writer(w)
         proxy.close(); await proxy.wait_closed()
+
+    async def test_proxy_protocol_accept_and_send(self):
+        received = []
+        async def backend(reader, writer):
+            header = await reader.readuntil(b"\r\n")
+            payload = await reader.read(16)
+            received.append((header, payload))
+            await m.close_writer(writer)
+
+        bserv = await asyncio.start_server(backend, "127.0.0.1", 0)
+        bport = bserv.sockets[0].getsockname()[1]
+        pp = m.ProxyProtocolConfig(True, True, 1, ("127.0.0.1",))
+        cfg = self.make_config(bport, bport, proxy_protocol=pp, connect_fallback_on_main_connect_failure=False, max_connections=10)
+        health = m.HealthState(1, 1); health.set_initial_state(True)
+        limiter = m.ConnectionLimiter(10)
+        proxy = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, cr, cw), "127.0.0.1", 0)
+        pport = proxy.sockets[0].getsockname()[1]
+        _, w = await asyncio.open_connection("127.0.0.1", pport)
+        w.write(b"PROXY TCP4 203.0.113.10 198.51.100.20 54321 25565\r\nHELLO")
+        await w.drain()
+        await asyncio.sleep(0.2)
+        await m.close_writer(w)
+        await asyncio.sleep(0.1)
+        proxy.close(); await proxy.wait_closed()
+        bserv.close(); await bserv.wait_closed()
+        self.assertTrue(received)
+        self.assertTrue(received[0][0].startswith(b"PROXY TCP4 203.0.113.10"))
+        self.assertEqual(received[0][1], b"HELLO")
 
 if __name__ == "__main__":
     unittest.main()
