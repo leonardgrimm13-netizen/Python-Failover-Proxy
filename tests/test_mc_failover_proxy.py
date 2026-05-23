@@ -103,6 +103,15 @@ class ConfigTests(unittest.TestCase):
         readme_de = (REPO_ROOT / "README.de.md").read_text(encoding="utf-8")
         self.assertIn("| `main.port` | MAIN server TCP port | `25564` |", readme)
         self.assertIn("| `main.port` | TCP-Port des Hauptservers | `25564` |", readme_de)
+
+    def test_readme_tables_document_new_connection_controls(self):
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        readme_de = (REPO_ROOT / "README.de.md").read_text(encoding="utf-8")
+        self.assertIn("| `healthcheck.jitter_seconds` |", readme)
+        self.assertIn("| `connection.max_connections` |", readme)
+        self.assertIn("| `healthcheck.jitter_seconds` |", readme_de)
+        self.assertIn("| `connection.max_connections` |", readme_de)
+
     def test_load_config_missing_file(self):
         with self.assertRaises(m.ConfigError):
             m.load_config(REPO_ROOT / "nope.toml")
@@ -162,9 +171,25 @@ class ConfigTests(unittest.TestCase):
             "protocol_version = 0",
             'require_valid_json = "yes"',
             'log_status_details = "yes"',
+            "jitter_seconds = -0.1",
         ]
         for line in invalid_lines:
             text = VALID_CONFIG_TOML.replace("recover_after = 2", f"recover_after = 2\n{line}")
+            with self.assertRaises(m.ConfigError, msg=line):
+                m.load_config(self.write_temp_config(text))
+
+    def test_validation_new_connection_fields(self):
+        invalid_lines = [
+            "buffer_size = 1",
+            "idle_timeout_seconds = 0",
+            "max_connections = 0",
+            'connect_fallback_on_main_connect_failure = "yes"',
+            'tcp_keepalive = "yes"',
+        ]
+        for line in invalid_lines:
+            text = VALID_CONFIG_TOML.replace("buffer_size = 65536", f"buffer_size = 65536\n{line}")
+            if line.startswith("buffer_size"):
+                text = VALID_CONFIG_TOML.replace("buffer_size = 65536", line)
             with self.assertRaises(m.ConfigError, msg=line):
                 m.load_config(self.write_temp_config(text))
 

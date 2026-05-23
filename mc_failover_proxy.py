@@ -3,12 +3,12 @@ import argparse
 import asyncio
 import json
 import logging
+import random
 import signal
 import socket
 import sys
 import time
 from dataclasses import dataclass
-import random
 from pathlib import Path
 from typing import Any, Optional
 
@@ -154,8 +154,6 @@ def _read_required(section_data: dict[str, Any], section: str, key: str) -> Any:
 
 def _read_optional(section_data: dict[str, Any], key: str, default: Any = None) -> Any:
     return section_data.get(key, default)
-
-
 
 
 def _clean_optional_string(value: Any) -> Any:
@@ -311,9 +309,6 @@ def validate_config(config: AppConfig) -> None:
     if not isinstance(config.healthcheck.log_status_details, bool):
         raise ConfigError("healthcheck.log_status_details muss bool sein.")
 
-    if config.healthcheck.jitter_seconds < 0:
-        raise ConfigError("healthcheck.jitter_seconds muss >= 0 sein.")
-
     def _normalize_host(host: str) -> str:
         return host.strip().lower()
 
@@ -381,6 +376,8 @@ def set_tcp_keepalive(writer: Optional[asyncio.StreamWriter]) -> None:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
     except OSError as exc:
         log.debug("TCP keepalive konnte nicht gesetzt werden: %s", exc)
+
+
 async def tcp_health_check(host: str, port: int, timeout: float) -> HealthCheckResult:
     writer = None
     started = time.monotonic()
