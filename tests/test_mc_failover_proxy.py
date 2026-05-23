@@ -716,14 +716,14 @@ class CliChecksTests(unittest.IsolatedAsyncioTestCase):
         args = argparse.Namespace(check_config=False, print_effective_config=False, test_main=True, test_fallback=False, test_healthcheck=False, config=Path("config.example.toml"))
         with mock.patch("mc_failover_proxy.tcp_health_check", new=mock.AsyncMock(return_value=m.HealthCheckResult(True, "ok", 1.2))) as mocked_tcp:
             self.assertEqual(await m.run_cli_checks(args, cfg), 0)
-            mocked_tcp.assert_awaited_once_with(cfg.main.host, cfg.main.port, cfg.healthcheck.timeout_seconds)
+            mocked_tcp.assert_awaited_once_with(cfg.main.host, cfg.main.port, cfg.connection.timeout_seconds)
 
     async def test_test_fallback_uses_fallback_target(self):
         cfg = m.load_config(REPO_ROOT / "config.example.toml")
         args = argparse.Namespace(check_config=False, print_effective_config=False, test_main=False, test_fallback=True, test_healthcheck=False, config=Path("config.example.toml"))
         with mock.patch("mc_failover_proxy.tcp_health_check", new=mock.AsyncMock(return_value=m.HealthCheckResult(True, "ok", 1.2))) as mocked_tcp:
             self.assertEqual(await m.run_cli_checks(args, cfg), 0)
-            mocked_tcp.assert_awaited_once_with(cfg.fallback.host, cfg.fallback.port, cfg.healthcheck.timeout_seconds)
+            mocked_tcp.assert_awaited_once_with(cfg.fallback.host, cfg.fallback.port, cfg.connection.timeout_seconds)
 
     async def test_test_healthcheck_uses_check_main_server(self):
         cfg = m.load_config(REPO_ROOT / "config.example.toml")

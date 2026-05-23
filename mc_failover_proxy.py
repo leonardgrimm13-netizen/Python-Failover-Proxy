@@ -859,10 +859,10 @@ async def run_cli_checks(args: argparse.Namespace, config: AppConfig) -> int:
         print(json.dumps(config_to_dict(config), indent=2, sort_keys=True))
 
     if args.test_main:
-        success = (await test_target_tcp("MAIN", config.main, config.healthcheck.timeout_seconds)).ok and success
+        success = (await test_target_tcp("MAIN", config.main, config.connection.timeout_seconds)).ok and success
 
     if args.test_fallback:
-        success = (await test_target_tcp("FALLBACK", config.fallback, config.healthcheck.timeout_seconds)).ok and success
+        success = (await test_target_tcp("FALLBACK", config.fallback, config.connection.timeout_seconds)).ok and success
 
     if args.test_healthcheck:
         target = get_healthcheck_target(config)
