@@ -404,3 +404,26 @@ Wenn du auf einem VPS arbeitest, lasse `listen_host` am besten auf `127.0.0.1` u
 ---
 
 [English](README.md)
+
+
+## Erweiterter Minecraft-Status-Check
+
+`minecraft_status` can optionally validate readiness details after JSON parsing (case-sensitive text matching):
+
+```toml
+[healthcheck]
+mode = "minecraft_status"
+target_host = "100.64.0.10"
+target_port = 25567
+require_valid_json = true
+expected_version_contains = "1.21"
+motd_must_contain = "READY"
+motd_must_not_contain = "STARTING"
+max_latency_ms = 1500
+min_players_max = 1
+```
+
+- `enable-status=true` in `server.properties` is required.
+- In Velocity/Paper setups, verify which target actually answers the status ping.
+- Practical READY-MOTD flow: use `STARTING` during boot/restart, switch to `READY` when truly finished.
+- `motd_*` filters only reflect your server configuration; they do not replace plugin-level readiness checks.
