@@ -109,7 +109,7 @@ level = "INFO"
 | `proxy.listen_host` | Interface/IP, auf dem der Proxy lauscht | `0.0.0.0` |
 | `proxy.listen_port` | TCP-Port für eingehende Spieler | `25565` |
 | `main.host` | Hostname/IP des Hauptservers (MAIN) | `127.0.0.1` |
-| `main.port` | TCP-Port des Hauptservers | `25567` |
+| `main.port` | TCP-Port des Hauptservers | `25564` |
 | `fallback.host` | Hostname/IP des Fallback-Servers | `127.0.0.1` |
 | `fallback.port` | TCP-Port des Fallback-Servers | `25566` |
 | `healthcheck.mode` | Healthcheck-Typ: `tcp` oder `minecraft_status` | `tcp` |
@@ -142,6 +142,9 @@ Wenn MAIN auf Velocity zeigt, beweist ein reiner TCP-Check oft nur, dass Velocit
 - `healthcheck.target_host` / `healthcheck.target_port` = separates Prüfziel für die Gesundheitsentscheidung.
 
 Beispiel (zu Velocity routen, echtes Backend prüfen):
+
+Das Standardbeispiel nutzt `mode = "tcp"` für einen sicheren Erststart. Für ein Velocity-Setup, bei dem der echte Backend-Server hinter Velocity geprüft werden soll, stelle auf `mode = "minecraft_status"` um und setze `target_host`/`target_port`.
+
 
 ```toml
 [main]

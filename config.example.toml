@@ -17,17 +17,23 @@ host = "127.0.0.1"
 port = 25566
 
 [healthcheck]
-# "minecraft_status" checks the real backend behind Velocity.
-mode = "minecraft_status"
+# Healthcheck mode:
+# - "tcp": simple TCP reachability check against MAIN/main target.
+# - "minecraft_status": real Minecraft status ping.
+#
+# For a first start, "tcp" is the safest default.
+# For Velocity setups, use "minecraft_status" and set target_host/target_port below.
+mode = "tcp"
 
 # Optional healthcheck override.
 # If unset, main.host/main.port are checked.
 # Useful when main points to Velocity but health should come from the real backend.
-target_host = "100.64.0.10"
-target_port = 25567
+# Example:
+# target_host = "100.64.0.10"
+# target_port = 25567
 
 # Minecraft status handshake protocol version (default: 767).
-# Adjust if your network/server stack needs another protocol id.
+# Used only for mode = "minecraft_status".
 protocol_version = 767
 # status_hostname = "survival.example.com"
 
