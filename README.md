@@ -305,3 +305,38 @@ python3 -m compileall .
 ---
 
 [Deutsch](README.de.md)
+
+## Docker
+
+```bash
+cp config.example.toml config.toml
+nano config.toml
+docker compose up -d
+docker compose logs -f mc-failover
+```
+
+Notes:
+- Port `25565` on the host must be free.
+- If another service already binds `25565`, change the published port in `docker-compose.yml`.
+- MAIN and FALLBACK must be reachable from inside the container.
+- On Linux host-access scenarios, uncomment `extra_hosts` with `host.docker.internal:host-gateway` in `docker-compose.yml`.
+
+## systemd (production unit)
+
+Use the hardened unit and step-by-step guide in:
+- `packaging/systemd/mc-failover.service`
+- `packaging/systemd/README.md`
+
+Quick commands:
+
+```bash
+sudo systemctl enable --now mc-failover
+journalctl -u mc-failover -f
+```
+
+## Security notes
+
+- Running as root is not required for standard port `25565` (>1024).
+- Keep runtime config outside the image/repository when possible.
+- Open only required firewall ports.
+- Do not expose monitoring endpoints publicly unless explicitly needed.

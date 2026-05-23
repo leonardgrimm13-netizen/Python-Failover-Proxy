@@ -305,3 +305,45 @@ python3 -m compileall .
 ---
 
 [English](README.md)
+
+## Docker
+
+```bash
+cp config.example.toml config.toml
+nano config.toml
+docker compose up -d
+docker compose logs -f mc-failover
+```
+
+Hinweise:
+- Host-Port `25565` muss frei sein.
+- Falls ein anderer Dienst bereits `25565` nutzt, passe das Port-Mapping in `docker-compose.yml` an.
+- MAIN und FALLBACK müssen **aus dem Container** erreichbar sein.
+- Für Linux-Hostzugriffe kannst du in `docker-compose.yml` optional `extra_hosts` mit `host.docker.internal:host-gateway` aktivieren.
+
+## systemd (Produktionsbetrieb)
+
+Für einen sauberen 24/7-Betrieb nutze die vorbereiteten Dateien:
+- `packaging/systemd/mc-failover.service`
+- `packaging/systemd/README.md`
+
+Kurzbefehle:
+
+```bash
+sudo systemctl enable --now mc-failover
+journalctl -u mc-failover -f
+```
+
+Empfehlung:
+- Service als dedizierter Benutzer `mcfailover` betreiben (kein root).
+- Konfiguration nach `/etc/mc-failover/config.toml` legen.
+- Anwendungscode nach `/opt/mc-failover` legen.
+
+## Sicherheit (Docker + systemd)
+
+- Für Standardbetrieb ist root nicht nötig (Port `25565` > 1024).
+- `config.toml` nicht ins Docker-Image kopieren; Datei als Volume einbinden.
+- Konfiguration idealerweise außerhalb des Repositorys verwalten.
+- Firewall restriktiv halten und nur benötigte Ports freischalten.
+- Monitoring/Admin-Endpunkte (falls genutzt) nur intern oder lokal erreichbar machen.
+- systemd-Härtung (`NoNewPrivileges`, `ProtectSystem`, `ProtectHome`) aktiv lassen und nur bei Bedarf bewusst lockern.
