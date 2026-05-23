@@ -393,6 +393,123 @@ class StatusProtocolTests(unittest.IsolatedAsyncioTestCase):
         cfg_b = m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", 3, 2, 2, 2, 0.0, "10.0.0.2", 25568, 767, None, True, False, 0.0)})
         self.assertEqual(m.get_healthcheck_target(cfg_b), m.TargetConfig("10.0.0.2", 25568))
 
+    async def test_health_loop_recovery_info_is_throttled(self):
+        cfg = m.load_config(REPO_ROOT / "config.toml")
+        cfg = m.AppConfig(
+            **{
+                **cfg.__dict__,
+                "healthcheck": m.HealthCheckConfig("tcp", 3.0, 2.0, 2, 3, 60.0, None, None, 767, None, False, False, 0.0),
+            }
+        )
+        health = m.HealthState(2, 3, min_recovery_seconds=60.0)
+        health.set_initial_state(False)
+        stop_event = asyncio.Event()
+        results = [m.HealthCheckResult(True, "ok") for _ in range(4)]
+        checks = iter(results)
+        monotonic_values = iter([100.0, 103.0, 106.0, 109.0])
+
+        async def fake_check(_cfg):
+            try:
+                return next(checks)
+            except StopIteration:
+                stop_event.set()
+                return m.HealthCheckResult(True, "ok")
+
+        with mock.patch("mc_failover_proxy.check_main_server", side_effect=fake_check), mock.patch(
+            "mc_failover_proxy.time", new=mock.Mock(monotonic=lambda: next(monotonic_values))
+        ):
+            with self.assertLogs("mc-failover", level="INFO") as captured:
+                await m.health_loop(cfg, health, stop_event)
+        recovery_logs = [line for line in captured.output if "Recovery-Stabilisierung" in line]
+        self.assertEqual(len(recovery_logs), 1)
+
+    async def test_health_loop_recovery_progress_logs_after_15_seconds(self):
+        cfg = m.load_config(REPO_ROOT / "config.toml")
+        cfg = m.AppConfig(
+            **{
+                **cfg.__dict__,
+                "healthcheck": m.HealthCheckConfig("tcp", 3.0, 2.0, 2, 3, 60.0, None, None, 767, None, False, False, 0.0),
+            }
+        )
+        health = m.HealthState(2, 3, min_recovery_seconds=60.0)
+        health.set_initial_state(False)
+        stop_event = asyncio.Event()
+        checks = iter([m.HealthCheckResult(True, "ok"), m.HealthCheckResult(True, "ok"), m.HealthCheckResult(True, "ok")])
+        monotonic_values = iter([100.0, 114.0, 115.0])
+
+        async def fake_check(_cfg):
+            try:
+                return next(checks)
+            except StopIteration:
+                stop_event.set()
+                return m.HealthCheckResult(True, "ok")
+
+        with mock.patch("mc_failover_proxy.check_main_server", side_effect=fake_check), mock.patch(
+            "mc_failover_proxy.time", new=mock.Mock(monotonic=lambda: next(monotonic_values))
+        ):
+            with self.assertLogs("mc-failover", level="INFO") as captured:
+                await m.health_loop(cfg, health, stop_event)
+        progress_logs = [line for line in captured.output if "weiterhin in Recovery-Stabilisierung" in line]
+        self.assertEqual(len(progress_logs), 1)
+
+    async def test_health_loop_logs_recovery_reset_once(self):
+        cfg = m.load_config(REPO_ROOT / "config.toml")
+        cfg = m.AppConfig(
+            **{
+                **cfg.__dict__,
+                "healthcheck": m.HealthCheckConfig("tcp", 3.0, 2.0, 2, 3, 60.0, None, None, 767, None, False, False, 0.0),
+            }
+        )
+        health = m.HealthState(2, 3, min_recovery_seconds=60.0)
+        health.set_initial_state(False)
+        stop_event = asyncio.Event()
+        checks = iter([m.HealthCheckResult(True, "status_json_ok"), m.HealthCheckResult(False, "timeout")])
+        monotonic_values = iter([100.0, 103.0])
+
+        async def fake_check(_cfg):
+            try:
+                return next(checks)
+            except StopIteration:
+                stop_event.set()
+                return m.HealthCheckResult(True, "ok")
+
+        with mock.patch("mc_failover_proxy.check_main_server", side_effect=fake_check), mock.patch(
+            "mc_failover_proxy.time", new=mock.Mock(monotonic=lambda: next(monotonic_values))
+        ):
+            with self.assertLogs("mc-failover", level="INFO") as captured:
+                await m.health_loop(cfg, health, stop_event)
+        reset_logs = [line for line in captured.output if "Recovery wurde durch fehlgeschlagenen Healthcheck zurückgesetzt" in line]
+        self.assertEqual(len(reset_logs), 1)
+
+    async def test_health_loop_no_recovery_progress_logs_when_min_recovery_zero(self):
+        cfg = m.load_config(REPO_ROOT / "config.toml")
+        cfg = m.AppConfig(
+            **{
+                **cfg.__dict__,
+                "healthcheck": m.HealthCheckConfig("tcp", 3.0, 2.0, 2, 3, 0.0, None, None, 767, None, False, False, 0.0),
+            }
+        )
+        health = m.HealthState(2, 3, min_recovery_seconds=0.0)
+        health.set_initial_state(False)
+        stop_event = asyncio.Event()
+        checks = iter([m.HealthCheckResult(True, "status_json_ok"), m.HealthCheckResult(True, "status_json_ok")])
+        monotonic_values = iter([100.0, 103.0])
+
+        async def fake_check(_cfg):
+            try:
+                return next(checks)
+            except StopIteration:
+                stop_event.set()
+                return m.HealthCheckResult(True, "ok")
+
+        with mock.patch("mc_failover_proxy.check_main_server", side_effect=fake_check), mock.patch(
+            "mc_failover_proxy.time", new=mock.Mock(monotonic=lambda: next(monotonic_values))
+        ):
+            with self.assertLogs("mc-failover", level="INFO") as captured:
+                await m.health_loop(cfg, health, stop_event)
+        recovery_logs = [line for line in captured.output if "Recovery-Stabilisierung" in line]
+        self.assertEqual(len(recovery_logs), 0)
+
     async def test_packet_creation(self):
         packet = m.make_minecraft_status_packet("survival.example.com", 25567, 767)
         self.assertIsInstance(packet, bytes)
