@@ -387,6 +387,16 @@ curl http://127.0.0.1:8080/metrics
 Use `/health` or `/ready` for Uptime Kuma, and `/metrics` for Prometheus scraping.
 Do not expose the monitoring port directly to the public internet. Prefer Tailscale, WireGuard, SSH tunnels, or a reverse proxy with authentication.
 
+`/state`, `/health`, and `/ready` always report the currently calculated routing decision.  
+File-based maintenance overrides are reflected immediately in monitoring (no restart and no new player connection required).
+
+```bash
+touch /var/lib/mc-failover/force_fallback
+curl http://127.0.0.1:8080/state
+```
+
+You should now see `active_target="FALLBACK"` and `routing_reason="force_fallback_file"`.
+
 ---
 
 [Deutsch](README.de.md)

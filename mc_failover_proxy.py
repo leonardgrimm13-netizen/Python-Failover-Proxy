@@ -517,6 +517,9 @@ async def tcp_health_check(host: str, port: int, timeout: float) -> HealthCheckR
     except Exception as exc:
         log.debug("TCP-Healthcheck fehlgeschlagen für %s:%s: %s", host, port, exc, exc_info=True)
         return HealthCheckResult(ok=False, reason=f"tcp_connect_failed: {exc.__class__.__name__}")
+    except asyncio.TimeoutError:
+        writer.write(text_response(408, "request timeout\n", "text/plain; charset=utf-8"))
+        await writer.drain()
     finally:
         await close_writer(writer)
 
@@ -640,6 +643,9 @@ async def minecraft_status_health_check(
     except (asyncio.TimeoutError, ConnectionError, OSError, asyncio.IncompleteReadError, ValueError, json.JSONDecodeError) as exc:
         log.debug("Minecraft-Status-Healthcheck fehlgeschlagen für %s:%s: %s", host, port, exc, exc_info=True)
         return HealthCheckResult(ok=False, reason=f"status_check_failed: {exc.__class__.__name__}")
+    except asyncio.TimeoutError:
+        writer.write(text_response(408, "request timeout\n", "text/plain; charset=utf-8"))
+        await writer.drain()
     finally:
         await close_writer(writer)
 
@@ -807,7 +813,7 @@ async def handle_client(
 
 
 def text_response(status: int, body: str, content_type: str) -> bytes:
-    reason = {200: "OK", 404: "Not Found", 405: "Method Not Allowed", 400: "Bad Request", 503: "Service Unavailable"}.get(status, "OK")
+    reason = {200: "OK", 404: "Not Found", 405: "Method Not Allowed", 400: "Bad Request", 408: "Request Timeout", 503: "Service Unavailable"}.get(status, "OK")
     encoded = body.encode("utf-8")
     return (
         f"HTTP/1.1 {status} {reason}\r\n"
@@ -821,8 +827,15 @@ def json_response(status: int, payload: dict[str, Any]) -> bytes:
     return text_response(status, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
 
 
-def build_state_payload(health: HealthState, runtime_state: RuntimeState) -> dict[str, Any]:
+def refresh_runtime_routing_state(config: AppConfig, health: HealthState, runtime_state: RuntimeState) -> TargetDecision:
+    decision = choose_target_decision(config, health)
+    update_runtime_routing_state(runtime_state, decision.target.name, decision.reason)
+    return decision
+
+
+def build_state_payload(config: AppConfig, health: HealthState, runtime_state: RuntimeState) -> dict[str, Any]:
     uptime = max(0.0, time.monotonic() - runtime_state.started_at)
+    decision = refresh_runtime_routing_state(config, health, runtime_state)
     return {
         "service": "mc-failover",
         "started_at": runtime_state.started_at,
@@ -831,7 +844,10 @@ def build_state_payload(health: HealthState, runtime_state: RuntimeState) -> dic
         "total_connections": runtime_state.total_connections,
         "rejected_connections": runtime_state.rejected_connections,
         "active_target": runtime_state.active_target,
+        "active_target_host": decision.target.host,
+        "active_target_port": decision.target.port,
         "routing_reason": runtime_state.routing_reason,
+        "maintenance_mode": decision.maintenance_mode,
         "main_healthy": health.main_healthy,
         "health_successes": health.successes,
         "health_failures": health.failures,
@@ -946,12 +962,14 @@ async def handle_monitoring_client(
             await writer.drain()
             return
         if path == "/health":
-            payload = build_state_payload(health, runtime_state)
+            payload = build_state_payload(config, health, runtime_state)
             lhr = runtime_state.last_health_result
             out = {
                 "ok": True,
                 "service": "mc-failover",
-                "active_target": runtime_state.active_target,
+                "active_target": payload["active_target"],
+                "routing_reason": payload["routing_reason"],
+                "maintenance_mode": payload["maintenance_mode"],
                 "main_healthy": health.main_healthy,
                 "last_health_reason": lhr.reason if lhr else None,
                 "last_health_latency_ms": lhr.latency_ms if lhr else None,
@@ -959,20 +977,24 @@ async def handle_monitoring_client(
             }
             writer.write(json_response(200, out))
         elif path == "/ready":
+            payload = build_state_payload(config, health, runtime_state)
             writer.write(
                 json_response(
                     200,
                     {
                         "ready": True,
                         "service": "mc-failover",
-                        "active_target": runtime_state.active_target,
+                        "active_target": payload["active_target"],
+                        "routing_reason": payload["routing_reason"],
+                        "maintenance_mode": payload["maintenance_mode"],
                         "main_healthy": health.main_healthy,
                     },
                 )
             )
         elif path == "/state":
-            writer.write(json_response(200, build_state_payload(health, runtime_state)))
+            writer.write(json_response(200, build_state_payload(config, health, runtime_state)))
         elif path == "/metrics":
+            payload = build_state_payload(config, health, runtime_state)
             lhr = runtime_state.last_health_result
             latency = lhr.latency_ms if lhr and lhr.latency_ms is not None else -1
             uptime = max(0.0, time.monotonic() - runtime_state.started_at)
@@ -985,14 +1007,18 @@ async def handle_monitoring_client(
                     f"mc_failover_rejected_connections {runtime_state.rejected_connections}",
                     f"mc_failover_main_healthy {1 if health.main_healthy else 0}",
                     f"mc_failover_last_health_latency_ms {latency}",
-                    f'mc_failover_active_target{{target="MAIN"}} {1 if runtime_state.active_target == "MAIN" else 0}',
-                    f'mc_failover_active_target{{target="FALLBACK"}} {1 if runtime_state.active_target == "FALLBACK" else 0}',
+                    f'mc_failover_active_target{{target="MAIN"}} {1 if payload["active_target"] == "MAIN" else 0}',
+                    f'mc_failover_active_target{{target="FALLBACK"}} {1 if payload["active_target"] == "FALLBACK" else 0}',
+                    f'mc_failover_routing_reason_info{{reason="{payload["routing_reason"]}"}} 1',
                     "",
                 ]
             )
             writer.write(text_response(200, body, "text/plain; version=0.0.4; charset=utf-8"))
         else:
             writer.write(text_response(404, "not found\n", "text/plain; charset=utf-8"))
+        await writer.drain()
+    except asyncio.TimeoutError:
+        writer.write(text_response(408, "request timeout\n", "text/plain; charset=utf-8"))
         await writer.drain()
     finally:
         await close_writer(writer)
