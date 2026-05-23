@@ -95,6 +95,7 @@ interval_seconds = 3.0
 timeout_seconds = 2.0
 fail_after = 2
 recover_after = 2
+min_recovery_seconds = 0.0
 
 [connection]
 timeout_seconds = 5.0
@@ -117,6 +118,7 @@ level = "INFO"
 | `healthcheck.timeout_seconds` | Timeout pro Prüfvorgang (Sekunden) | `2.0` |
 | `healthcheck.fail_after` | Anzahl Fehlversuche bis Umschaltung auf FALLBACK | `2` |
 | `healthcheck.recover_after` | Anzahl Erfolge bis Rückschaltung auf MAIN | `2` |
+| `healthcheck.min_recovery_seconds` | Zusätzliche stabile Gesund-Zeit vor Rückschaltung auf MAIN | `0.0` |
 | `healthcheck.target_host` | Optionales Ziel für den Healthcheck-Host | `100.64.0.10` |
 | `healthcheck.target_port` | Optionales Ziel für den Healthcheck-Port | `25567` |
 | `healthcheck.protocol_version` | Protokollversion im Status-Handshake (Default) | `767` |
@@ -138,9 +140,33 @@ Wichtige Einordnung:
 - `minecraft_status` ist protokollnäher, kann aber je nach Server/Proxy/Version empfindlicher reagieren.
 - `fail_after` verhindert sofortiges Umschalten bei einzelnen Kurzstörungen.
 - `recover_after` verhindert zu frühes Zurückschalten und reduziert Flapping.
+- `min_recovery_seconds` ergänzt eine durchgehende Healthy-Wartezeit nach der MAIN-Rückkehr, damit Spieler nicht zu früh auf MAIN landen.
 - Code-Defaults sind bewusst konservativ/rückwärtskompatibel: `connect_fallback_on_main_connect_failure = false`, `tcp_keepalive = false`.
 - In `config.example.toml` sind beide bewusst als empfohlene Produktionswerte auf `true` gesetzt.
 - `idle_timeout_seconds = 0` deaktiviert den Idle-Disconnect vollständig.
+
+
+## Recovery-Wartezeit für MAIN
+
+Minecraft-Server (Paper/Spigot/Velocity) können TCP- oder Status-Checks oft beantworten, obwohl Plugins, Welten, Datenbanken, LuckPerms, BlueMap oder Modpack-Systeme noch starten.
+
+Mit `healthcheck.min_recovery_seconds` verlangst du nach der ersten Erreichbarkeit von MAIN eine zusätzliche, durchgehend stabile Healthy-Zeit.
+
+```toml
+[healthcheck]
+interval_seconds = 3.0
+fail_after = 2
+recover_after = 3
+min_recovery_seconds = 30.0
+```
+
+Bedeutung:
+- Ausfall wird nach ca. 6 Sekunden erkannt (`2 * 3s`).
+- Rückkehr auf MAIN erst nach mindestens 3 erfolgreichen Checks **und** mindestens 30 Sekunden stabiler Erreichbarkeit.
+
+Bei großen Modpacks oder Paper-Servern mit vielen Plugins ist 20-60 Sekunden oft sinnvoll.
+
+Mit `min_recovery_seconds = 0.0` bleibt das bisherige Verhalten erhalten.
 
 ## Velocity / Backend-Healthcheck
 

@@ -95,6 +95,7 @@ interval_seconds = 3.0
 timeout_seconds = 2.0
 fail_after = 2
 recover_after = 2
+min_recovery_seconds = 0.0
 
 [connection]
 timeout_seconds = 5.0
@@ -117,6 +118,7 @@ level = "INFO"
 | `healthcheck.timeout_seconds` | Timeout per healthcheck attempt | `2.0` |
 | `healthcheck.fail_after` | Consecutive failures before switch to FALLBACK | `2` |
 | `healthcheck.recover_after` | Consecutive successes before switch back to MAIN | `2` |
+| `healthcheck.min_recovery_seconds` | Minimum additional stable healthy time before switchback | `0.0` |
 | `healthcheck.target_host` | Optional host for healthcheck target override | `100.64.0.10` |
 | `healthcheck.target_port` | Optional port for healthcheck target override | `25567` |
 | `healthcheck.protocol_version` | Status handshake protocol version (default) | `767` |
@@ -138,9 +140,31 @@ Guidance:
 - `minecraft_status` can be more protocol-aware, but may be more sensitive depending on server version/proxies/network middleboxes.
 - `fail_after` avoids immediate failover from a single transient failure.
 - `recover_after` avoids flapping and early switchback to MAIN.
+- `min_recovery_seconds` adds a continuous healthy waiting period after MAIN comes back, so players are not sent too early.
 - Default behavior in code is conservative and backward-safe: `connect_fallback_on_main_connect_failure = false`, `tcp_keepalive = false`.
 - The `config.example.toml` intentionally enables both (`true`) as recommended production defaults for new installs.
 - `idle_timeout_seconds = 0` disables idle disconnects completely.
+
+
+## Recovery wait time for MAIN
+
+Minecraft servers (Paper/Spigot/Velocity) can answer TCP/status checks before plugins, worlds, databases, LuckPerms, BlueMap, or modpack systems are fully ready.
+
+Use `healthcheck.min_recovery_seconds` to require extra continuous healthy time **after** MAIN starts responding again.
+
+```toml
+[healthcheck]
+interval_seconds = 3.0
+fail_after = 2
+recover_after = 3
+min_recovery_seconds = 30.0
+```
+
+Meaning:
+- Failover is detected after about 6 seconds (`2 * 3s`).
+- Switchback to MAIN happens only after at least 3 successful checks **and** at least 30 seconds of continuous healthy checks.
+
+Set `min_recovery_seconds = 0.0` to keep the previous behavior.
 
 ## Velocity / Backend healthcheck
 

@@ -49,6 +49,9 @@ interval_seconds = 3.0
 timeout_seconds = 2.0
 fail_after = 2
 recover_after = 2
+# Additional stable recovery time before switching from FALLBACK back to MAIN.
+# Useful for Minecraft servers that answer status pings before plugins/worlds are fully ready.
+min_recovery_seconds = 0.0
 jitter_seconds = 0.2
 
 [connection]

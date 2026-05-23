@@ -50,6 +50,7 @@ class HealthCheckConfig:
     timeout_seconds: float
     fail_after: int
     recover_after: int
+    min_recovery_seconds: float
     target_host: Optional[str]
     target_port: Optional[int]
     protocol_version: int
@@ -102,31 +103,47 @@ class Target:
 
 
 class HealthState:
-    def __init__(self, fail_after: int, recover_after: int) -> None:
+    def __init__(self, fail_after: int, recover_after: int, min_recovery_seconds: float = 0.0) -> None:
         self.fail_after = fail_after
         self.recover_after = recover_after
+        self.min_recovery_seconds = float(min_recovery_seconds)
         self.main_healthy: bool = False
         self._successes: int = 0
         self._failures: int = 0
+        self._recovery_started_at: Optional[float] = None
 
     def set_initial_state(self, ok: bool) -> None:
         self.main_healthy = ok
         self._successes = 1 if ok else 0
         self._failures = 0 if ok else 1
+        self._recovery_started_at = None
 
-    def report(self, ok: bool) -> Optional[bool]:
+    def report(self, ok: bool, now: Optional[float] = None) -> Optional[bool]:
+        current_now = time.monotonic() if now is None else now
         old_state = self.main_healthy
         if ok:
             self._successes += 1
             self._failures = 0
-            if not self.main_healthy and self._successes >= self.recover_after:
-                self.main_healthy = True
+            if not self.main_healthy:
+                if self._recovery_started_at is None:
+                    self._recovery_started_at = current_now
+                recovery_elapsed = current_now - self._recovery_started_at
+                if self._successes >= self.recover_after and recovery_elapsed >= self.min_recovery_seconds:
+                    self.main_healthy = True
+                    self._recovery_started_at = None
         else:
             self._failures += 1
             self._successes = 0
+            self._recovery_started_at = None
             if self.main_healthy and self._failures >= self.fail_after:
                 self.main_healthy = False
         return self.main_healthy if old_state != self.main_healthy else None
+
+    def recovery_remaining_seconds(self, now: Optional[float] = None) -> float:
+        if self.main_healthy or self.min_recovery_seconds <= 0 or self._recovery_started_at is None:
+            return 0.0
+        current_now = time.monotonic() if now is None else now
+        return max(0.0, self.min_recovery_seconds - (current_now - self._recovery_started_at))
 
 
 def setup_logging(level: str) -> None:
@@ -210,6 +227,7 @@ def load_config(path: Path) -> AppConfig:
             timeout_seconds=_read_required(healthcheck, "healthcheck", "timeout_seconds"),
             fail_after=_read_required(healthcheck, "healthcheck", "fail_after"),
             recover_after=_read_required(healthcheck, "healthcheck", "recover_after"),
+            min_recovery_seconds=_read_optional(healthcheck, "min_recovery_seconds", 0.0),
             target_host=_clean_optional_string(_read_optional(healthcheck, "target_host")),
             target_port=_read_optional(healthcheck, "target_port"),
             protocol_version=_read_optional(healthcheck, "protocol_version", 767),
@@ -288,6 +306,14 @@ def validate_config(config: AppConfig) -> None:
 
     if isinstance(config.healthcheck.jitter_seconds, bool) or not isinstance(config.healthcheck.jitter_seconds, (int, float)) or config.healthcheck.jitter_seconds < 0:
         raise ConfigError(f"healthcheck.jitter_seconds muss int oder float und >= 0 sein (aktuell: {config.healthcheck.jitter_seconds!r}).")
+    if (
+        isinstance(config.healthcheck.min_recovery_seconds, bool)
+        or not isinstance(config.healthcheck.min_recovery_seconds, (int, float))
+        or config.healthcheck.min_recovery_seconds < 0
+    ):
+        raise ConfigError(
+            f"healthcheck.min_recovery_seconds muss int oder float und >= 0 sein (aktuell: {config.healthcheck.min_recovery_seconds!r})."
+        )
 
     if not isinstance(config.logging.level, str) or config.logging.level.upper() not in VALID_LOG_LEVELS:
         raise ConfigError("logging.level muss DEBUG, INFO, WARNING, ERROR oder CRITICAL sein.")
@@ -648,7 +674,8 @@ async def health_loop(config: AppConfig, health: HealthState, stop_event: asynci
     while not stop_event.is_set():
         try:
             result = await check_main_server(config)
-            changed_to = health.report(result.ok)
+            now = time.monotonic()
+            changed_to = health.report(result.ok, now=now)
             if config.healthcheck.log_status_details and result.ok:
                 log.info(
                     "Healthcheck ok (%s): latency=%.1fms version=%s players=%s/%s reason=%s",
@@ -661,6 +688,15 @@ async def health_loop(config: AppConfig, health: HealthState, stop_event: asynci
                 )
             elif not result.ok:
                 log.debug("Healthcheck nicht ok: %s", result.reason)
+            elif not health.main_healthy:
+                recovery_elapsed = max(0.0, health.min_recovery_seconds - health.recovery_remaining_seconds(now=now))
+                log.info(
+                    "MAIN antwortet wieder, warte auf Recovery-Stabilität: %s/%s successful checks, %.1f/%.1fs",
+                    health._successes,
+                    health.recover_after,
+                    recovery_elapsed,
+                    health.min_recovery_seconds,
+                )
 
             if changed_to is True:
                 log.warning("FALLBACK -> MAIN (%s:%s): %s", target.host, target.port, result.reason)
@@ -690,7 +726,11 @@ async def run() -> int:
         return 1
 
     setup_logging(config.logging.level)
-    health = HealthState(config.healthcheck.fail_after, config.healthcheck.recover_after)
+    health = HealthState(
+        config.healthcheck.fail_after,
+        config.healthcheck.recover_after,
+        config.healthcheck.min_recovery_seconds,
+    )
 
     stop_event = asyncio.Event()
     limiter = ConnectionLimiter(config.connection.max_connections)
