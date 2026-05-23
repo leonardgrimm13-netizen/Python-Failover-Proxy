@@ -8,6 +8,7 @@ import socket
 import sys
 import time
 from dataclasses import dataclass
+import random
 from pathlib import Path
 from typing import Any, Optional
 
@@ -55,6 +56,7 @@ class HealthCheckConfig:
     status_hostname: Optional[str]
     require_valid_json: bool
     log_status_details: bool
+    jitter_seconds: float
 
 
 @dataclass(frozen=True)
@@ -71,6 +73,10 @@ class HealthCheckResult:
 class ConnectionConfig:
     timeout_seconds: float
     buffer_size: int
+    idle_timeout_seconds: float
+    connect_fallback_on_main_connect_failure: bool
+    tcp_keepalive: bool
+    max_connections: int
 
 
 @dataclass(frozen=True)
@@ -212,10 +218,15 @@ def load_config(path: Path) -> AppConfig:
             status_hostname=_clean_optional_string(_read_optional(healthcheck, "status_hostname")),
             require_valid_json=_read_optional(healthcheck, "require_valid_json", True),
             log_status_details=_read_optional(healthcheck, "log_status_details", False),
+            jitter_seconds=_read_optional(healthcheck, "jitter_seconds", 0.0),
         ),
         connection=ConnectionConfig(
             timeout_seconds=_read_required(connection, "connection", "timeout_seconds"),
             buffer_size=_read_required(connection, "connection", "buffer_size"),
+            idle_timeout_seconds=_read_optional(connection, "idle_timeout_seconds", 300.0),
+            connect_fallback_on_main_connect_failure=_read_optional(connection, "connect_fallback_on_main_connect_failure", False),
+            tcp_keepalive=_read_optional(connection, "tcp_keepalive", False),
+            max_connections=_read_optional(connection, "max_connections", 4096),
         ),
         logging=LoggingConfig(level=_clean_required_string(_read_required(logging_cfg, "logging", "level"))),
     )
@@ -242,8 +253,17 @@ def validate_config(config: AppConfig) -> None:
         if not _is_int(value) or value < 1:
             raise ConfigError(f"{key} muss ein Integer >= 1 sein (aktuell: {value!r}).")
 
-    if not _is_int(config.connection.buffer_size) or config.connection.buffer_size <= 0:
-        raise ConfigError(f"connection.buffer_size muss ein Integer > 0 sein (aktuell: {config.connection.buffer_size!r}).")
+    if not _is_int(config.connection.buffer_size) or config.connection.buffer_size < 1024:
+        raise ConfigError(f"connection.buffer_size muss ein Integer >= 1024 sein (aktuell: {config.connection.buffer_size!r}).")
+
+    if not _is_int(config.connection.max_connections) or config.connection.max_connections < 1:
+        raise ConfigError("connection.max_connections muss ein Integer >= 1 sein.")
+
+    if not isinstance(config.connection.connect_fallback_on_main_connect_failure, bool):
+        raise ConfigError("connection.connect_fallback_on_main_connect_failure muss bool sein.")
+
+    if not isinstance(config.connection.tcp_keepalive, bool):
+        raise ConfigError("connection.tcp_keepalive muss bool sein.")
 
     if not isinstance(config.healthcheck.mode, str) or config.healthcheck.mode not in VALID_HEALTH_CHECK_MODES:
         raise ConfigError("healthcheck.mode muss 'tcp' oder 'minecraft_status' sein.")
@@ -260,9 +280,13 @@ def validate_config(config: AppConfig) -> None:
         ("healthcheck.interval_seconds", config.healthcheck.interval_seconds),
         ("healthcheck.timeout_seconds", config.healthcheck.timeout_seconds),
         ("connection.timeout_seconds", config.connection.timeout_seconds),
+        ("connection.idle_timeout_seconds", config.connection.idle_timeout_seconds),
     ):
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
             raise ConfigError(f"{key} muss int oder float und > 0 sein (aktuell: {value!r}).")
+
+    if isinstance(config.healthcheck.jitter_seconds, bool) or not isinstance(config.healthcheck.jitter_seconds, (int, float)) or config.healthcheck.jitter_seconds < 0:
+        raise ConfigError(f"healthcheck.jitter_seconds muss int oder float und >= 0 sein (aktuell: {config.healthcheck.jitter_seconds!r}).")
 
     if not isinstance(config.logging.level, str) or config.logging.level.upper() not in VALID_LOG_LEVELS:
         raise ConfigError("logging.level muss DEBUG, INFO, WARNING, ERROR oder CRITICAL sein.")
@@ -286,6 +310,9 @@ def validate_config(config: AppConfig) -> None:
 
     if not isinstance(config.healthcheck.log_status_details, bool):
         raise ConfigError("healthcheck.log_status_details muss bool sein.")
+
+    if config.healthcheck.jitter_seconds < 0:
+        raise ConfigError("healthcheck.jitter_seconds muss >= 0 sein.")
 
     def _normalize_host(host: str) -> str:
         return host.strip().lower()
@@ -342,6 +369,18 @@ def set_tcp_nodelay(writer: Optional[asyncio.StreamWriter]) -> None:
         log.debug("TCP_NODELAY konnte nicht gesetzt werden: %s", exc)
 
 
+
+
+def set_tcp_keepalive(writer: Optional[asyncio.StreamWriter]) -> None:
+    if writer is None:
+        return
+    sock = writer.get_extra_info("socket")
+    if sock is None:
+        return
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    except OSError as exc:
+        log.debug("TCP keepalive konnte nicht gesetzt werden: %s", exc)
 async def tcp_health_check(host: str, port: int, timeout: float) -> HealthCheckResult:
     writer = None
     started = time.monotonic()
@@ -499,14 +538,16 @@ def choose_target(config: AppConfig, health: HealthState) -> Target:
     return Target(name=name, host=current.host, port=current.port)
 
 
-async def pipe(source: asyncio.StreamReader, destination: asyncio.StreamWriter, direction_name: str, buffer_size: int) -> None:
+async def pipe(source: asyncio.StreamReader, destination: asyncio.StreamWriter, direction_name: str, buffer_size: int, idle_timeout_seconds: float) -> None:
     try:
         while True:
-            data = await source.read(buffer_size)
+            data = await asyncio.wait_for(source.read(buffer_size), timeout=idle_timeout_seconds)
             if not data:
                 break
             destination.write(data)
             await destination.drain()
+    except asyncio.TimeoutError:
+        log.info("Verbindung wegen Idle-Timeout geschlossen (%s)", direction_name)
     except (ConnectionResetError, BrokenPipeError):
         log.debug("Verbindung zurückgesetzt (%s)", direction_name)
     except asyncio.CancelledError:
@@ -515,19 +556,55 @@ async def pipe(source: asyncio.StreamReader, destination: asyncio.StreamWriter, 
         log.debug("Pipe-Fehler %s: %s", direction_name, exc)
 
 
-async def handle_client(config: AppConfig, health: HealthState, client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter) -> None:
+class ConnectionLimiter:
+    def __init__(self, max_connections: int) -> None:
+        self.max_connections = max_connections
+        self._active = 0
+        self._lock = asyncio.Lock()
+
+    async def try_acquire(self) -> bool:
+        async with self._lock:
+            if self._active >= self.max_connections:
+                return False
+            self._active += 1
+            return True
+
+    async def release(self) -> None:
+        async with self._lock:
+            if self._active > 0:
+                self._active -= 1
+
+
+async def handle_client(config: AppConfig, health: HealthState, limiter: ConnectionLimiter, client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter) -> None:
     peer = client_writer.get_extra_info("peername")
+    if not await limiter.try_acquire():
+        log.warning("Verbindung von %s abgelehnt: max_connections erreicht", peer)
+        await close_writer(client_writer)
+        return
+
     target = choose_target(config, health)
     log.info("Neue Verbindung von %s -> %s %s:%s", peer, target.name, target.host, target.port)
     server_writer = None
     try:
-        server_reader, server_writer = await asyncio.wait_for(
-            asyncio.open_connection(target.host, target.port), timeout=config.connection.timeout_seconds
-        )
+        try:
+            server_reader, server_writer = await asyncio.wait_for(
+                asyncio.open_connection(target.host, target.port), timeout=config.connection.timeout_seconds
+            )
+        except Exception:
+            if target.name == "MAIN" and config.connection.connect_fallback_on_main_connect_failure:
+                fb = Target("FALLBACK", config.fallback.host, config.fallback.port)
+                log.warning("MAIN connect fehlgeschlagen, versuche FALLBACK sofort für %s", peer)
+                server_reader, server_writer = await asyncio.wait_for(asyncio.open_connection(fb.host, fb.port), timeout=config.connection.timeout_seconds)
+                target = fb
+            else:
+                raise
         set_tcp_nodelay(client_writer)
         set_tcp_nodelay(server_writer)
-        c2s = asyncio.create_task(pipe(client_reader, server_writer, "client -> server", config.connection.buffer_size))
-        s2c = asyncio.create_task(pipe(server_reader, client_writer, "server -> client", config.connection.buffer_size))
+        if config.connection.tcp_keepalive:
+            set_tcp_keepalive(client_writer)
+            set_tcp_keepalive(server_writer)
+        c2s = asyncio.create_task(pipe(client_reader, server_writer, "client -> server", config.connection.buffer_size, config.connection.idle_timeout_seconds))
+        s2c = asyncio.create_task(pipe(server_reader, client_writer, "server -> client", config.connection.buffer_size, config.connection.idle_timeout_seconds))
         done, pending = await asyncio.wait({c2s, s2c}, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
             task.cancel()
@@ -538,6 +615,7 @@ async def handle_client(config: AppConfig, health: HealthState, client_reader: a
     finally:
         await close_writer(server_writer)
         await close_writer(client_writer)
+        await limiter.release()
         log.info("Verbindung beendet: %s", peer)
 
 
@@ -568,7 +646,8 @@ async def health_loop(config: AppConfig, health: HealthState, stop_event: asynci
         except Exception as exc:
             log.exception("Unerwarteter Fehler im Healthcheck-Loop: %s", exc)
         try:
-            await asyncio.wait_for(stop_event.wait(), timeout=config.healthcheck.interval_seconds)
+            jitter = random.uniform(0, config.healthcheck.jitter_seconds) if config.healthcheck.jitter_seconds > 0 else 0.0
+            await asyncio.wait_for(stop_event.wait(), timeout=config.healthcheck.interval_seconds + jitter)
         except asyncio.TimeoutError:
             pass
 
@@ -591,6 +670,7 @@ async def run() -> int:
     health = HealthState(config.healthcheck.fail_after, config.healthcheck.recover_after)
 
     stop_event = asyncio.Event()
+    limiter = ConnectionLimiter(config.connection.max_connections)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -621,7 +701,7 @@ async def run() -> int:
 
     try:
         server = await asyncio.start_server(
-            lambda r, w: handle_client(config, health, r, w),
+            lambda r, w: handle_client(config, health, limiter, r, w),
             config.proxy.listen_host,
             config.proxy.listen_port,
             start_serving=True,

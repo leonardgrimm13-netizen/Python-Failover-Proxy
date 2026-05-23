@@ -16,10 +16,15 @@ interval_seconds = 3.0
 timeout_seconds = 2.0
 fail_after = 2
 recover_after = 2
+jitter_seconds = 0.2
 
 [connection]
 timeout_seconds = 5.0
 buffer_size = 65536
+idle_timeout_seconds = 300.0
+connect_fallback_on_main_connect_failure = true
+tcp_keepalive = true
+max_connections = 4096
 
 [logging]
 level = "INFO"

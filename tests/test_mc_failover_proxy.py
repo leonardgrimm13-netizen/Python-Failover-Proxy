@@ -61,8 +61,8 @@ class ConfigTests(unittest.TestCase):
             proxy=m.ProxyConfig("0.0.0.0", 25565),
             main=m.TargetConfig("127.0.0.1", 25564),
             fallback=m.TargetConfig("127.0.0.1", 25566),
-            healthcheck=m.HealthCheckConfig("tcp", 3.0, 2.0, 2, 2, None, None, 767, None, True, False),
-            connection=m.ConnectionConfig(5.0, 65536),
+            healthcheck=m.HealthCheckConfig("tcp", 3.0, 2.0, 2, 2, None, None, 767, None, True, False, 0.0),
+            connection=m.ConnectionConfig(5.0, 65536, 300.0, False, False, 4096),
             logging=m.LoggingConfig("INFO"),
         )
 
@@ -173,15 +173,15 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(m.ConfigError):
             m.validate_config(m.AppConfig(**{**cfg.__dict__, "proxy": m.ProxyConfig("0.0.0.0", True)}))
         with self.assertRaises(m.ConfigError):
-            m.validate_config(m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", True, 2.0, 2, 2, None, None, 767, None, True, False)}))
+            m.validate_config(m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", True, 2.0, 2, 2, None, None, 767, None, True, False, 0.0)}))
         with self.assertRaises(m.ConfigError):
             m.validate_config(m.AppConfig(**{**cfg.__dict__, "proxy": m.ProxyConfig("0.0.0.0", 70000)}))
         with self.assertRaises(m.ConfigError):
             m.validate_config(m.AppConfig(**{**cfg.__dict__, "main": m.TargetConfig("", 25564)}))
         with self.assertRaises(m.ConfigError):
-            m.validate_config(m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", "3", 2.0, 2, 2, None, None, 767, None, True, False)}))
+            m.validate_config(m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", "3", 2.0, 2, 2, None, None, 767, None, True, False, 0.0)}))
         with self.assertRaises(m.ConfigError):
-            m.validate_config(m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("invalid", 3, 2, 2, 2, None, None, 767, None, True, False)}))
+            m.validate_config(m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("invalid", 3, 2, 2, 2, None, None, 767, None, True, False, 0.0)}))
         with self.assertRaises(m.ConfigError):
             m.validate_config(m.AppConfig(**{**cfg.__dict__, "logging": m.LoggingConfig("NOPE")}))
 
@@ -191,13 +191,13 @@ class ConfigTests(unittest.TestCase):
             m.validate_config(m.AppConfig(**{**cfg.__dict__, "main": m.TargetConfig("127.0.0.1", 25565)}))
         with self.assertRaises(m.ConfigError):
             m.validate_config(m.AppConfig(**{**cfg.__dict__, "fallback": m.TargetConfig("localhost", 25565)}))
-        bad_hc = m.HealthCheckConfig("tcp", 3, 2, 2, 2, "127.0.0.1", 25565, 767, None, True, False)
+        bad_hc = m.HealthCheckConfig("tcp", 3, 2, 2, 2, "127.0.0.1", 25565, 767, None, True, False, 0.0)
         with self.assertRaises(m.ConfigError):
             m.validate_config(m.AppConfig(**{**cfg.__dict__, "healthcheck": bad_hc}))
 
     def test_validate_config_safe_healthcheck_override(self):
         cfg = self.valid_config()
-        good_hc = m.HealthCheckConfig("minecraft_status", 3, 2, 2, 2, "100.64.0.10", 25567, 767, None, True, False)
+        good_hc = m.HealthCheckConfig("minecraft_status", 3, 2, 2, 2, "100.64.0.10", 25567, 767, None, True, False, 0.0)
         m.validate_config(m.AppConfig(**{**cfg.__dict__, "healthcheck": good_hc}))
 
 
@@ -236,16 +236,16 @@ class StatusProtocolTests(unittest.IsolatedAsyncioTestCase):
             proxy=m.ProxyConfig("0.0.0.0", 25565),
             main=m.TargetConfig("127.0.0.1", 25564),
             fallback=m.TargetConfig("127.0.0.1", 25566),
-            healthcheck=m.HealthCheckConfig("tcp", 3, 2, 2, 2, None, None, 767, None, True, False),
-            connection=m.ConnectionConfig(5.0, 65536),
+            healthcheck=m.HealthCheckConfig("tcp", 3, 2, 2, 2, None, None, 767, None, True, False, 0.0),
+            connection=m.ConnectionConfig(5.0, 65536, 300.0, False, False, 4096),
             logging=m.LoggingConfig("INFO"),
         )
         self.assertEqual(m.get_healthcheck_target(cfg), m.TargetConfig("127.0.0.1", 25564))
-        cfg_h = m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", 3, 2, 2, 2, "10.0.0.2", None, 767, None, True, False)})
+        cfg_h = m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", 3, 2, 2, 2, "10.0.0.2", None, 767, None, True, False, 0.0)})
         self.assertEqual(m.get_healthcheck_target(cfg_h), m.TargetConfig("10.0.0.2", 25564))
-        cfg_p = m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", 3, 2, 2, 2, None, 25568, 767, None, True, False)})
+        cfg_p = m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", 3, 2, 2, 2, None, 25568, 767, None, True, False, 0.0)})
         self.assertEqual(m.get_healthcheck_target(cfg_p), m.TargetConfig("127.0.0.1", 25568))
-        cfg_b = m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", 3, 2, 2, 2, "10.0.0.2", 25568, 767, None, True, False)})
+        cfg_b = m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", 3, 2, 2, 2, "10.0.0.2", 25568, 767, None, True, False, 0.0)})
         self.assertEqual(m.get_healthcheck_target(cfg_b), m.TargetConfig("10.0.0.2", 25568))
 
     async def test_packet_creation(self):

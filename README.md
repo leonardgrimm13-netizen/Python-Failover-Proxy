@@ -123,8 +123,13 @@ level = "INFO"
 | `healthcheck.status_hostname` | Optional hostname sent in status handshake | `survival.example.com` |
 | `healthcheck.require_valid_json` | Require valid JSON status response | `true` |
 | `healthcheck.log_status_details` | Log version/players/latency on success | `false` |
+| `healthcheck.jitter_seconds` | Random delay added per check to reduce synchronized bursts | `0.2` |
 | `connection.timeout_seconds` | Upstream connection timeout | `5.0` |
 | `connection.buffer_size` | TCP forwarding buffer size | `65536` |
+| `connection.idle_timeout_seconds` | Idle timeout for established proxied connections | `300.0` |
+| `connection.connect_fallback_on_main_connect_failure` | If MAIN connect fails, try FALLBACK immediately | `true` |
+| `connection.tcp_keepalive` | Enable SO_KEEPALIVE on proxied sockets | `true` |
+| `connection.max_connections` | Hard limit for concurrent client sessions | `4096` |
 | `logging.level` | Logging level (`DEBUG`, `INFO`, ...) | `INFO` |
 
 Guidance:
