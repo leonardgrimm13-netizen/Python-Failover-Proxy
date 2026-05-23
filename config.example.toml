@@ -51,6 +51,14 @@ fail_after = 2
 recover_after = 2
 jitter_seconds = 0.2
 
+# Optional minecraft_status readiness filters.
+# 0 or empty values disable the filter.
+max_latency_ms = 0.0
+expected_version_contains = ""
+motd_must_contain = ""
+motd_must_not_contain = ""
+min_players_max = 0
+
 [connection]
 timeout_seconds = 5.0
 buffer_size = 65536

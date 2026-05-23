@@ -57,6 +57,11 @@ class HealthCheckConfig:
     require_valid_json: bool
     log_status_details: bool
     jitter_seconds: float
+    max_latency_ms: float
+    expected_version_contains: str
+    motd_must_contain: str
+    motd_must_not_contain: str
+    min_players_max: int
 
 
 @dataclass(frozen=True)
@@ -67,6 +72,7 @@ class HealthCheckResult:
     version_name: Optional[str] = None
     players_online: Optional[int] = None
     players_max: Optional[int] = None
+    motd_text: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -158,8 +164,7 @@ def _read_optional(section_data: dict[str, Any], key: str, default: Any = None) 
 
 def _clean_optional_string(value: Any) -> Any:
     if isinstance(value, str):
-        cleaned = value.strip()
-        return cleaned if cleaned else value
+        return value.strip()
     return value
 
 
@@ -217,6 +222,11 @@ def load_config(path: Path) -> AppConfig:
             require_valid_json=_read_optional(healthcheck, "require_valid_json", True),
             log_status_details=_read_optional(healthcheck, "log_status_details", False),
             jitter_seconds=_read_optional(healthcheck, "jitter_seconds", 0.0),
+            max_latency_ms=_read_optional(healthcheck, "max_latency_ms", 0.0),
+            expected_version_contains=_clean_optional_string(_read_optional(healthcheck, "expected_version_contains", "")),
+            motd_must_contain=_clean_optional_string(_read_optional(healthcheck, "motd_must_contain", "")),
+            motd_must_not_contain=_clean_optional_string(_read_optional(healthcheck, "motd_must_not_contain", "")),
+            min_players_max=_read_optional(healthcheck, "min_players_max", 0),
         ),
         connection=ConnectionConfig(
             timeout_seconds=_read_required(connection, "connection", "timeout_seconds"),
@@ -311,6 +321,29 @@ def validate_config(config: AppConfig) -> None:
 
     if not isinstance(config.healthcheck.log_status_details, bool):
         raise ConfigError("healthcheck.log_status_details muss bool sein.")
+
+    if isinstance(config.healthcheck.max_latency_ms, bool) or not isinstance(config.healthcheck.max_latency_ms, (int, float)) or config.healthcheck.max_latency_ms < 0:
+        raise ConfigError(f"healthcheck.max_latency_ms muss int oder float und >= 0 sein (aktuell: {config.healthcheck.max_latency_ms!r}).")
+
+    for key, value in (
+        ("healthcheck.expected_version_contains", config.healthcheck.expected_version_contains),
+        ("healthcheck.motd_must_contain", config.healthcheck.motd_must_contain),
+        ("healthcheck.motd_must_not_contain", config.healthcheck.motd_must_not_contain),
+    ):
+        if not isinstance(value, str):
+            raise ConfigError(f"{key} muss String sein (aktuell: {value!r}).")
+
+    if not _is_int(config.healthcheck.min_players_max) or config.healthcheck.min_players_max < 0:
+        raise ConfigError(f"healthcheck.min_players_max muss ein Integer >= 0 sein (aktuell: {config.healthcheck.min_players_max!r}).")
+
+    json_based_filters_active = any((
+        config.healthcheck.expected_version_contains,
+        config.healthcheck.motd_must_contain,
+        config.healthcheck.motd_must_not_contain,
+        config.healthcheck.min_players_max > 0,
+    ))
+    if json_based_filters_active and not config.healthcheck.require_valid_json:
+        raise ConfigError("healthcheck.require_valid_json muss true sein, wenn JSON-basierte minecraft_status Filter gesetzt sind.")
 
     def _normalize_host(host: str) -> str:
         return host.strip().lower()
@@ -436,6 +469,23 @@ def make_minecraft_status_packet(host: str, port: int, protocol_version: int) ->
     return handshake_packet + request_packet
 
 
+def extract_motd_text(description: Any) -> str:
+    if isinstance(description, str):
+        return description
+    if isinstance(description, dict):
+        chunks: list[str] = []
+        text = description.get("text")
+        if isinstance(text, str):
+            chunks.append(text)
+        extra = description.get("extra")
+        if isinstance(extra, list):
+            chunks.append(extract_motd_text(extra))
+        return "".join(chunks)
+    if isinstance(description, list):
+        return "".join(extract_motd_text(item) for item in description)
+    return ""
+
+
 async def minecraft_status_health_check(
     host: str,
     port: int,
@@ -443,6 +493,11 @@ async def minecraft_status_health_check(
     protocol_version: int,
     status_hostname: Optional[str],
     require_valid_json: bool,
+    max_latency_ms: float = 0.0,
+    expected_version_contains: str = "",
+    motd_must_contain: str = "",
+    motd_must_not_contain: str = "",
+    min_players_max: int = 0,
 ) -> HealthCheckResult:
     writer = None
     started = time.monotonic()
@@ -503,6 +558,19 @@ async def minecraft_status_health_check(
             if isinstance(maximum, int):
                 players_max = maximum
 
+        motd_text = extract_motd_text(parsed.get("description"))
+
+        if max_latency_ms > 0 and latency_ms > max_latency_ms:
+            return HealthCheckResult(False, "latency_too_high", latency_ms, version_name, players_online, players_max, motd_text)
+        if expected_version_contains and (version_name is None or expected_version_contains not in version_name):
+            return HealthCheckResult(False, "version_mismatch", latency_ms, version_name, players_online, players_max, motd_text)
+        if motd_must_contain and motd_must_contain not in motd_text:
+            return HealthCheckResult(False, "motd_missing_required_text", latency_ms, version_name, players_online, players_max, motd_text)
+        if motd_must_not_contain and motd_must_not_contain in motd_text:
+            return HealthCheckResult(False, "motd_contains_forbidden_text", latency_ms, version_name, players_online, players_max, motd_text)
+        if min_players_max > 0 and (players_max is None or players_max < min_players_max):
+            return HealthCheckResult(False, "players_max_too_low", latency_ms, version_name, players_online, players_max, motd_text)
+
         return HealthCheckResult(
             ok=True,
             reason="status_json_ok",
@@ -510,6 +578,7 @@ async def minecraft_status_health_check(
             version_name=version_name,
             players_online=players_online,
             players_max=players_max,
+            motd_text=motd_text,
         )
     except (asyncio.TimeoutError, ConnectionError, OSError, asyncio.IncompleteReadError, ValueError, json.JSONDecodeError) as exc:
         log.debug("Minecraft-Status-Healthcheck fehlgeschlagen für %s:%s: %s", host, port, exc, exc_info=True)
@@ -529,6 +598,11 @@ async def check_main_server(config: AppConfig) -> HealthCheckResult:
         config.healthcheck.protocol_version,
         config.healthcheck.status_hostname,
         config.healthcheck.require_valid_json,
+        config.healthcheck.max_latency_ms,
+        config.healthcheck.expected_version_contains,
+        config.healthcheck.motd_must_contain,
+        config.healthcheck.motd_must_not_contain,
+        config.healthcheck.min_players_max,
     )
 
 
@@ -649,14 +723,20 @@ async def health_loop(config: AppConfig, health: HealthState, stop_event: asynci
         try:
             result = await check_main_server(config)
             changed_to = health.report(result.ok)
-            if config.healthcheck.log_status_details and result.ok:
-                log.info(
-                    "Healthcheck ok (%s): latency=%.1fms version=%s players=%s/%s reason=%s",
+            if config.healthcheck.log_status_details:
+                motd_short = ((result.motd_text or "n/a").replace("\n", " ").replace("\r", " "))
+                if len(motd_short) > 120:
+                    motd_short = motd_short[:117] + "..."
+                log_level = log.info if result.ok else log.debug
+                log_level(
+                    'Healthcheck %s (%s): latency=%.1fms version=%s players=%s/%s motd="%s" reason=%s',
+                    "ok" if result.ok else "not_ok",
                     config.healthcheck.mode,
                     result.latency_ms if result.latency_ms is not None else -1,
                     result.version_name or "n/a",
                     result.players_online if result.players_online is not None else "n/a",
                     result.players_max if result.players_max is not None else "n/a",
+                    motd_short,
                     result.reason,
                 )
             elif not result.ok:

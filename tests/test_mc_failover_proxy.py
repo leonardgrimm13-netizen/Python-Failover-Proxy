@@ -61,7 +61,7 @@ class ConfigTests(unittest.TestCase):
             proxy=m.ProxyConfig("0.0.0.0", 25565),
             main=m.TargetConfig("127.0.0.1", 25564),
             fallback=m.TargetConfig("127.0.0.1", 25566),
-            healthcheck=m.HealthCheckConfig("tcp", 3.0, 2.0, 2, 2, None, None, 767, None, True, False, 0.0),
+            healthcheck=m.HealthCheckConfig("tcp", 3.0, 2.0, 2, 2, None, None, 767, None, True, False, 0.0, 0.0, "", "", "", 0),
             connection=m.ConnectionConfig(5.0, 65536, 300.0, False, False, 4096),
             logging=m.LoggingConfig("INFO"),
         )
@@ -147,6 +147,11 @@ class ConfigTests(unittest.TestCase):
         self.assertIsNone(cfg.healthcheck.status_hostname)
         self.assertTrue(cfg.healthcheck.require_valid_json)
         self.assertFalse(cfg.healthcheck.log_status_details)
+        self.assertEqual(cfg.healthcheck.max_latency_ms, 0.0)
+        self.assertEqual(cfg.healthcheck.expected_version_contains, "")
+        self.assertEqual(cfg.healthcheck.motd_must_contain, "")
+        self.assertEqual(cfg.healthcheck.motd_must_not_contain, "")
+        self.assertEqual(cfg.healthcheck.min_players_max, 0)
 
     def test_new_healthcheck_config_parsing(self):
         text = VALID_CONFIG_TOML.replace('mode = "tcp"', 'mode = "minecraft_status"').replace(
@@ -161,6 +166,18 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(cfg.healthcheck.require_valid_json)
         self.assertTrue(cfg.healthcheck.log_status_details)
 
+    def test_new_readiness_filter_strings_are_stripped(self):
+        text = VALID_CONFIG_TOML.replace("recover_after = 2", 'recover_after = 2\nexpected_version_contains = " 1.21 "\nmotd_must_contain = " READY "\nmotd_must_not_contain = " STARTING "\nmin_players_max = 1')
+        cfg = m.load_config(self.write_temp_config(text))
+        self.assertEqual(cfg.healthcheck.expected_version_contains, "1.21")
+        self.assertEqual(cfg.healthcheck.motd_must_contain, "READY")
+        self.assertEqual(cfg.healthcheck.motd_must_not_contain, "STARTING")
+
+    def test_json_filters_require_valid_json(self):
+        text = VALID_CONFIG_TOML.replace('mode = "tcp"', 'mode = "minecraft_status"').replace("recover_after = 2", 'recover_after = 2\nrequire_valid_json = false\nexpected_version_contains = "1.21"')
+        with self.assertRaises(m.ConfigError):
+            m.load_config(self.write_temp_config(text))
+
     def test_validation_new_fields(self):
         invalid_lines = [
             'target_port = "abc"',
@@ -172,6 +189,11 @@ class ConfigTests(unittest.TestCase):
             'require_valid_json = "yes"',
             'log_status_details = "yes"',
             "jitter_seconds = -0.1",
+            "max_latency_ms = -1",
+            "max_latency_ms = true",
+            "min_players_max = -1",
+            "min_players_max = true",
+            "expected_version_contains = 1",
         ]
         for line in invalid_lines:
             text = VALID_CONFIG_TOML.replace("recover_after = 2", f"recover_after = 2\n{line}")
@@ -198,15 +220,15 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(m.ConfigError):
             m.validate_config(m.AppConfig(**{**cfg.__dict__, "proxy": m.ProxyConfig("0.0.0.0", True)}))
         with self.assertRaises(m.ConfigError):
-            m.validate_config(m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", True, 2.0, 2, 2, None, None, 767, None, True, False, 0.0)}))
+            m.validate_config(m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", True, 2.0, 2, 2, None, None, 767, None, True, False, 0.0, 0.0, "", "", "", 0)}))
         with self.assertRaises(m.ConfigError):
             m.validate_config(m.AppConfig(**{**cfg.__dict__, "proxy": m.ProxyConfig("0.0.0.0", 70000)}))
         with self.assertRaises(m.ConfigError):
             m.validate_config(m.AppConfig(**{**cfg.__dict__, "main": m.TargetConfig("", 25564)}))
         with self.assertRaises(m.ConfigError):
-            m.validate_config(m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", "3", 2.0, 2, 2, None, None, 767, None, True, False, 0.0)}))
+            m.validate_config(m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", "3", 2.0, 2, 2, None, None, 767, None, True, False, 0.0, 0.0, "", "", "", 0)}))
         with self.assertRaises(m.ConfigError):
-            m.validate_config(m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("invalid", 3, 2, 2, 2, None, None, 767, None, True, False, 0.0)}))
+            m.validate_config(m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("invalid", 3, 2, 2, 2, None, None, 767, None, True, False, 0.0, 0.0, "", "", "", 0)}))
         with self.assertRaises(m.ConfigError):
             m.validate_config(m.AppConfig(**{**cfg.__dict__, "logging": m.LoggingConfig("NOPE")}))
 
@@ -216,13 +238,13 @@ class ConfigTests(unittest.TestCase):
             m.validate_config(m.AppConfig(**{**cfg.__dict__, "main": m.TargetConfig("127.0.0.1", 25565)}))
         with self.assertRaises(m.ConfigError):
             m.validate_config(m.AppConfig(**{**cfg.__dict__, "fallback": m.TargetConfig("localhost", 25565)}))
-        bad_hc = m.HealthCheckConfig("tcp", 3, 2, 2, 2, "127.0.0.1", 25565, 767, None, True, False, 0.0)
+        bad_hc = m.HealthCheckConfig("tcp", 3, 2, 2, 2, "127.0.0.1", 25565, 767, None, True, False, 0.0, 0.0, "", "", "", 0)
         with self.assertRaises(m.ConfigError):
             m.validate_config(m.AppConfig(**{**cfg.__dict__, "healthcheck": bad_hc}))
 
     def test_validate_config_safe_healthcheck_override(self):
         cfg = self.valid_config()
-        good_hc = m.HealthCheckConfig("minecraft_status", 3, 2, 2, 2, "100.64.0.10", 25567, 767, None, True, False, 0.0)
+        good_hc = m.HealthCheckConfig("minecraft_status", 3, 2, 2, 2, "100.64.0.10", 25567, 767, None, True, False, 0.0, 0.0, "", "", "", 0)
         m.validate_config(m.AppConfig(**{**cfg.__dict__, "healthcheck": good_hc}))
 
 
@@ -261,16 +283,16 @@ class StatusProtocolTests(unittest.IsolatedAsyncioTestCase):
             proxy=m.ProxyConfig("0.0.0.0", 25565),
             main=m.TargetConfig("127.0.0.1", 25564),
             fallback=m.TargetConfig("127.0.0.1", 25566),
-            healthcheck=m.HealthCheckConfig("tcp", 3, 2, 2, 2, None, None, 767, None, True, False, 0.0),
+            healthcheck=m.HealthCheckConfig("tcp", 3, 2, 2, 2, None, None, 767, None, True, False, 0.0, 0.0, "", "", "", 0),
             connection=m.ConnectionConfig(5.0, 65536, 300.0, False, False, 4096),
             logging=m.LoggingConfig("INFO"),
         )
         self.assertEqual(m.get_healthcheck_target(cfg), m.TargetConfig("127.0.0.1", 25564))
-        cfg_h = m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", 3, 2, 2, 2, "10.0.0.2", None, 767, None, True, False, 0.0)})
+        cfg_h = m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", 3, 2, 2, 2, "10.0.0.2", None, 767, None, True, False, 0.0, 0.0, "", "", "", 0)})
         self.assertEqual(m.get_healthcheck_target(cfg_h), m.TargetConfig("10.0.0.2", 25564))
-        cfg_p = m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", 3, 2, 2, 2, None, 25568, 767, None, True, False, 0.0)})
+        cfg_p = m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", 3, 2, 2, 2, None, 25568, 767, None, True, False, 0.0, 0.0, "", "", "", 0)})
         self.assertEqual(m.get_healthcheck_target(cfg_p), m.TargetConfig("127.0.0.1", 25568))
-        cfg_b = m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", 3, 2, 2, 2, "10.0.0.2", 25568, 767, None, True, False, 0.0)})
+        cfg_b = m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", 3, 2, 2, 2, "10.0.0.2", 25568, 767, None, True, False, 0.0, 0.0, "", "", "", 0)})
         self.assertEqual(m.get_healthcheck_target(cfg_b), m.TargetConfig("10.0.0.2", 25568))
 
     async def test_packet_creation(self):
@@ -333,7 +355,33 @@ class StatusProtocolTests(unittest.IsolatedAsyncioTestCase):
         finally:
             server.close(); await server.wait_closed()
 
+        status_motd = b'{"version":{"name":"1.21.1"},"players":{"online":3,"max":20},"description":{"text":"READY Survival"}}'
+        filt_payload = m.write_varint(len(m.write_varint(0) + m.write_varint(len(status_motd)) + status_motd)) + (m.write_varint(0) + m.write_varint(len(status_motd)) + status_motd)
+        server, port = await run_server(filt_payload)
+        try:
+            self.assertTrue((await m.minecraft_status_health_check("127.0.0.1", port, 1.0, 767, None, True, expected_version_contains="1.21")).ok)
+            self.assertFalse((await m.minecraft_status_health_check("127.0.0.1", port, 1.0, 767, None, True, expected_version_contains="1.20")).ok)
+            self.assertTrue((await m.minecraft_status_health_check("127.0.0.1", port, 1.0, 767, None, True, motd_must_contain="READY")).ok)
+            self.assertFalse((await m.minecraft_status_health_check("127.0.0.1", port, 1.0, 767, None, True, motd_must_contain="STARTING")).ok)
+            self.assertTrue((await m.minecraft_status_health_check("127.0.0.1", port, 1.0, 767, None, True, motd_must_not_contain="STARTING")).ok)
+            self.assertFalse((await m.minecraft_status_health_check("127.0.0.1", port, 1.0, 767, None, True, motd_must_not_contain="READY")).ok)
+            self.assertTrue((await m.minecraft_status_health_check("127.0.0.1", port, 1.0, 767, None, True, min_players_max=10)).ok)
+            self.assertFalse((await m.minecraft_status_health_check("127.0.0.1", port, 1.0, 767, None, True, min_players_max=30)).ok)
+            self.assertFalse((await m.minecraft_status_health_check("127.0.0.1", port, 1.0, 767, None, True, max_latency_ms=0.0001)).ok)
+        finally:
+            server.close(); await server.wait_closed()
+
         self.assertFalse((await m.minecraft_status_health_check("127.0.0.1", 9, 0.01, 767, None, True)).ok)
+
+
+class MotdExtractionTests(unittest.TestCase):
+    def test_extract_motd_text_variants(self):
+        self.assertEqual(m.extract_motd_text("A Minecraft Server"), "A Minecraft Server")
+        self.assertEqual(m.extract_motd_text({"text": "Hello"}), "Hello")
+        self.assertEqual(m.extract_motd_text({"text": "Hello ", "extra": [{"text": "World"}, "!"]}), "Hello World!")
+        self.assertEqual(m.extract_motd_text([{"text": "A"}, {"text": "B"}]), "AB")
+        self.assertEqual(m.extract_motd_text({"extra": [{"text": "READY"}, {"extra": [{"text": " Survival"}]}]}), "READY Survival")
+        self.assertEqual(m.extract_motd_text({"text": 1, "extra": [None, {"foo": "bar"}]}), "")
 
 
 class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -342,7 +390,7 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             proxy=m.ProxyConfig("127.0.0.1", 25565),
             main=m.TargetConfig("127.0.0.1", main_port),
             fallback=m.TargetConfig("127.0.0.1", fallback_port),
-            healthcheck=m.HealthCheckConfig("tcp", 3.0, 1.0, 1, 1, None, None, 767, None, True, False, 0.0),
+            healthcheck=m.HealthCheckConfig("tcp", 3.0, 1.0, 1, 1, None, None, 767, None, True, False, 0.0, 0.0, "", "", "", 0),
             connection=m.ConnectionConfig(
                 overrides.get("timeout_seconds", 0.5),
                 4096,

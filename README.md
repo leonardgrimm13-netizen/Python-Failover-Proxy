@@ -305,3 +305,25 @@ python3 -m compileall .
 ---
 
 [Deutsch](README.de.md)
+
+
+## Advanced Minecraft Status Checks
+
+```toml
+[healthcheck]
+mode = "minecraft_status"
+target_host = "100.64.0.10"
+target_port = 25567
+require_valid_json = true
+expected_version_contains = "1.21"
+motd_must_contain = "READY"
+motd_must_not_contain = "STARTING"
+max_latency_ms = 1500
+min_players_max = 1
+```
+
+- Status ping requires `enable-status=true` in `server.properties`.
+- In Velocity/Paper setups, ensure the intended backend answers the status ping.
+- Practical tip: set MOTD to `STARTING` during boot and `READY` when fully loaded; then use `motd_must_contain = "READY"`.
+- Warning: MOTD filtering depends on server configuration and does not replace plugin-level readiness signaling.
+- Matching for `expected_version_contains`, `motd_must_contain`, and `motd_must_not_contain` is case-sensitive.
