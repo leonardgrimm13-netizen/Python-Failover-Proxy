@@ -310,6 +310,65 @@ journalctl -u mc-failover -f
 
 Note: `ProtectHome=true` can block config files stored under home directories. Prefer placing files under `/opt/mc-failover` or adjust hardening settings intentionally.
 
+## Docker
+
+Quick start:
+
+```bash
+cp config.example.toml config.toml
+nano config.toml
+docker compose up -d
+docker compose logs -f mc-failover
+```
+
+Notes:
+
+- Port `25565/tcp` must be free on the host.
+- If another service already uses `25565`, change the published port mapping in `docker-compose.yml`.
+- MAIN and FALLBACK must be reachable from inside the container.
+- On Linux, if host services must be reached, enable `host.docker.internal` via `host-gateway` (example is included as comments in `docker-compose.yml`).
+
+
+If MAIN/FALLBACK run on the same Linux host as Docker, enable host gateway mapping in `docker-compose.yml`:
+
+```yaml
+extra_hosts:
+  - "host.docker.internal:host-gateway"
+```
+
+Then reference the host from `config.toml` for upstreams:
+
+```toml
+[main]
+host = "host.docker.internal"
+port = 25564
+
+[fallback]
+host = "host.docker.internal"
+port = 25566
+```
+
+## systemd
+
+For production systemd deployment, use:
+
+- Service unit: `packaging/systemd/mc-failover.service`
+- Step-by-step guide: `packaging/systemd/README.md`
+
+Quick commands:
+
+```bash
+sudo systemctl enable --now mc-failover
+journalctl -u mc-failover -f
+```
+
+## Security recommendations
+
+- The proxy does not need to run as root (container and systemd service use dedicated unprivileged user defaults).
+- Keep runtime config outside the repository and outside container image layers.
+- Open only required firewall ports.
+- Do not expose monitoring/admin endpoints publicly unless explicitly required.
+
 ## Firewall
 
 ```bash
