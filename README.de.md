@@ -231,6 +231,34 @@ Hinweis: `ProtectHome=true` kann problematisch sein, wenn die Config im Home-Ver
 sudo ufw allow 25565/tcp
 ```
 
+## Monitoring
+
+Optionaler integrierter HTTP-Monitoring-Port (standardmäßig deaktiviert).
+
+```toml
+[monitoring]
+enabled = false
+listen_host = "127.0.0.1"
+listen_port = 8080
+allow_remote = false
+```
+
+Beispiele:
+
+```bash
+curl http://127.0.0.1:8080/health
+curl http://127.0.0.1:8080/ready
+curl http://127.0.0.1:8080/state
+curl http://127.0.0.1:8080/metrics
+```
+
+- Standard: deaktiviert.
+- Standard: nur localhost.
+- Für Uptime Kuma: `/health` oder `/ready`.
+- Für Prometheus: `/metrics`.
+- Sicherheit: Monitoring-Port nicht direkt öffentlich ins Internet öffnen; besser über Tailscale, WireGuard, SSH-Tunnel oder Reverse-Proxy mit Auth.
+- Wenn du auf einem VPS arbeitest, lasse `listen_host` am besten auf `127.0.0.1` und greife per SSH-Tunnel oder Tailscale darauf zu.
+
 ## Tests und Checks
 
 ```bash

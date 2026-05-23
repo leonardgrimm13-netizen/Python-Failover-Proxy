@@ -85,6 +85,14 @@ class LoggingConfig:
 
 
 @dataclass(frozen=True)
+class MonitoringConfig:
+    enabled: bool
+    listen_host: str
+    listen_port: int
+    allow_remote: bool
+
+
+@dataclass(frozen=True)
 class AppConfig:
     proxy: ProxyConfig
     main: TargetConfig
@@ -92,6 +100,7 @@ class AppConfig:
     healthcheck: HealthCheckConfig
     connection: ConnectionConfig
     logging: LoggingConfig
+    monitoring: MonitoringConfig
 
 
 @dataclass(frozen=True)
@@ -127,6 +136,26 @@ class HealthState:
             if self.main_healthy and self._failures >= self.fail_after:
                 self.main_healthy = False
         return self.main_healthy if old_state != self.main_healthy else None
+
+    @property
+    def successes(self) -> int:
+        return self._successes
+
+    @property
+    def failures(self) -> int:
+        return self._failures
+
+
+@dataclass
+class RuntimeState:
+    started_at: float
+    active_connections: int = 0
+    total_connections: int = 0
+    rejected_connections: int = 0
+    active_target: str = "UNKNOWN"
+    routing_reason: str = "startup"
+    last_health_result: Optional[HealthCheckResult] = None
+    last_health_check_at: Optional[float] = None
 
 
 def setup_logging(level: str) -> None:
@@ -190,6 +219,11 @@ def load_config(path: Path) -> AppConfig:
     healthcheck = _read_section(raw, "healthcheck")
     connection = _read_section(raw, "connection")
     logging_cfg = _read_section(raw, "logging")
+    monitoring_cfg = raw.get("monitoring", {})
+    if monitoring_cfg is None:
+        monitoring_cfg = {}
+    if not isinstance(monitoring_cfg, dict):
+        raise ConfigError("Sektion [monitoring] muss ein TOML-Table sein.")
 
     config = AppConfig(
         proxy=ProxyConfig(
@@ -227,6 +261,12 @@ def load_config(path: Path) -> AppConfig:
             max_connections=_read_optional(connection, "max_connections", 4096),
         ),
         logging=LoggingConfig(level=_clean_required_string(_read_required(logging_cfg, "logging", "level"))),
+        monitoring=MonitoringConfig(
+            enabled=_read_optional(monitoring_cfg, "enabled", False),
+            listen_host=_clean_required_string(_read_optional(monitoring_cfg, "listen_host", "127.0.0.1")),
+            listen_port=_read_optional(monitoring_cfg, "listen_port", 8080),
+            allow_remote=_read_optional(monitoring_cfg, "allow_remote", False),
+        ),
     )
     validate_config(config)
     return config
@@ -243,6 +283,7 @@ def validate_config(config: AppConfig) -> None:
     _validate_port("proxy.listen_port", config.proxy.listen_port)
     _validate_port("main.port", config.main.port)
     _validate_port("fallback.port", config.fallback.port)
+    _validate_port("monitoring.listen_port", config.monitoring.listen_port)
 
     for key, value in (
         ("healthcheck.fail_after", config.healthcheck.fail_after),
@@ -291,6 +332,16 @@ def validate_config(config: AppConfig) -> None:
 
     if not isinstance(config.logging.level, str) or config.logging.level.upper() not in VALID_LOG_LEVELS:
         raise ConfigError("logging.level muss DEBUG, INFO, WARNING, ERROR oder CRITICAL sein.")
+    if not isinstance(config.monitoring.enabled, bool):
+        raise ConfigError("monitoring.enabled muss bool sein.")
+    if not isinstance(config.monitoring.allow_remote, bool):
+        raise ConfigError("monitoring.allow_remote muss bool sein.")
+    if not isinstance(config.monitoring.listen_host, str) or not config.monitoring.listen_host.strip():
+        raise ConfigError("monitoring.listen_host muss ein nicht-leerer String sein.")
+    monitoring_host = config.monitoring.listen_host.strip().lower()
+    local_monitoring_hosts = {"127.0.0.1", "localhost", "::1"}
+    if config.monitoring.enabled and monitoring_host not in local_monitoring_hosts and not config.monitoring.allow_remote:
+        raise ConfigError("monitoring.listen_host ist nicht lokal; setze monitoring.allow_remote=true um Remote-Bind zu erlauben.")
 
     if config.healthcheck.target_host is not None:
         if not isinstance(config.healthcheck.target_host, str) or not config.healthcheck.target_host.strip():
@@ -538,6 +589,11 @@ def choose_target(config: AppConfig, health: HealthState) -> Target:
     return Target(name=name, host=current.host, port=current.port)
 
 
+def update_runtime_target(runtime_state: RuntimeState, target_name: str, reason: str) -> None:
+    runtime_state.active_target = target_name
+    runtime_state.routing_reason = reason
+
+
 async def pipe(source: asyncio.StreamReader, destination: asyncio.StreamWriter, direction_name: str, buffer_size: int, idle_timeout_seconds: float) -> None:
     try:
         while True:
@@ -578,14 +634,18 @@ class ConnectionLimiter:
                 self._active -= 1
 
 
-async def handle_client(config: AppConfig, health: HealthState, limiter: ConnectionLimiter, client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter) -> None:
+async def handle_client(config: AppConfig, health: HealthState, limiter: ConnectionLimiter, runtime_state: RuntimeState, client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter) -> None:
     peer = client_writer.get_extra_info("peername")
     if not await limiter.try_acquire():
         log.warning("Verbindung von %s abgelehnt: max_connections erreicht", peer)
+        runtime_state.rejected_connections += 1
         await close_writer(client_writer)
         return
 
     target = choose_target(config, health)
+    update_runtime_target(runtime_state, target.name, "health_based_routing")
+    runtime_state.active_connections += 1
+    runtime_state.total_connections += 1
     log.info("Neue Verbindung von %s -> %s %s:%s", peer, target.name, target.host, target.port)
     server_writer = None
     try:
@@ -610,6 +670,7 @@ async def handle_client(config: AppConfig, health: HealthState, limiter: Connect
                         asyncio.open_connection(fb.host, fb.port), timeout=config.connection.timeout_seconds
                     )
                     target = fb
+                    update_runtime_target(runtime_state, target.name, "main_connect_failed_fallback_connect_enabled")
                 except Exception as fallback_exc:
                     log.error(
                         "MAIN connect fehlgeschlagen und FALLBACK connect ebenfalls fehlgeschlagen für %s (%s:%s, %s)",
@@ -638,16 +699,19 @@ async def handle_client(config: AppConfig, health: HealthState, limiter: Connect
     finally:
         await close_writer(server_writer)
         await close_writer(client_writer)
+        runtime_state.active_connections = max(0, runtime_state.active_connections - 1)
         await limiter.release()
         log.info("Verbindung beendet: %s", peer)
 
 
-async def health_loop(config: AppConfig, health: HealthState, stop_event: asyncio.Event) -> None:
+async def health_loop(config: AppConfig, health: HealthState, runtime_state: RuntimeState, stop_event: asyncio.Event) -> None:
     target = get_healthcheck_target(config)
     log.info("Healthcheck gestartet (%s): %s:%s", config.healthcheck.mode, target.host, target.port)
     while not stop_event.is_set():
         try:
             result = await check_main_server(config)
+            runtime_state.last_health_result = result
+            runtime_state.last_health_check_at = time.time()
             changed_to = health.report(result.ok)
             if config.healthcheck.log_status_details and result.ok:
                 log.info(
@@ -675,6 +739,113 @@ async def health_loop(config: AppConfig, health: HealthState, stop_event: asynci
             pass
 
 
+def build_state_payload(health: HealthState, runtime_state: RuntimeState) -> dict[str, Any]:
+    now = time.time()
+    return {
+        "service": "mc-failover",
+        "started_at": runtime_state.started_at,
+        "uptime_seconds": round(max(0.0, now - runtime_state.started_at), 3),
+        "active_connections": runtime_state.active_connections,
+        "total_connections": runtime_state.total_connections,
+        "rejected_connections": runtime_state.rejected_connections,
+        "active_target": runtime_state.active_target,
+        "routing_reason": runtime_state.routing_reason,
+        "main_healthy": health.main_healthy,
+        "health_successes": health.successes,
+        "health_failures": health.failures,
+        "last_health_check_at": runtime_state.last_health_check_at,
+        "last_health_result": (None if runtime_state.last_health_result is None else runtime_state.last_health_result.__dict__),
+    }
+
+
+def text_response(status: int, body: str, content_type: str) -> bytes:
+    phrases = {200: "OK", 400: "Bad Request", 404: "Not Found", 405: "Method Not Allowed", 503: "Service Unavailable"}
+    reason = phrases.get(status, "OK")
+    payload = body.encode("utf-8")
+    headers = [
+        f"HTTP/1.1 {status} {reason}",
+        f"Content-Type: {content_type}",
+        f"Content-Length: {len(payload)}",
+        "Connection: close",
+        "",
+        "",
+    ]
+    return "\r\n".join(headers).encode("ascii") + payload
+
+
+def json_response(status: int, payload: dict[str, Any]) -> bytes:
+    return text_response(status, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
+
+
+async def handle_monitoring_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, config: AppConfig, health: HealthState, runtime_state: RuntimeState) -> None:
+    try:
+        request_line = await reader.readline()
+        if len(request_line) > 4096:
+            writer.write(text_response(400, "request line too long\n", "text/plain; charset=utf-8"))
+            await writer.drain()
+            return
+        parts = request_line.decode("ascii", errors="replace").strip().split()
+        if len(parts) != 3:
+            writer.write(text_response(400, "bad request\n", "text/plain; charset=utf-8"))
+            await writer.drain()
+            return
+        method, path, _version = parts
+        while True:
+            line = await reader.readline()
+            if not line or line in (b"\r\n", b"\n"):
+                break
+        if method != "GET":
+            writer.write(text_response(405, "method not allowed\n", "text/plain; charset=utf-8"))
+        elif path == "/health":
+            last = runtime_state.last_health_result
+            writer.write(json_response(200, {
+                "ok": True,
+                "service": "mc-failover",
+                "active_target": runtime_state.active_target,
+                "main_healthy": health.main_healthy,
+                "last_health_reason": None if last is None else last.reason,
+                "last_health_latency_ms": None if last is None else last.latency_ms,
+                "uptime_seconds": round(max(0.0, time.time() - runtime_state.started_at), 3),
+            }))
+        elif path == "/ready":
+            writer.write(json_response(200, {"ready": True, "service": "mc-failover"}))
+        elif path == "/state":
+            writer.write(json_response(200, build_state_payload(health, runtime_state)))
+        elif path == "/metrics":
+            last_latency = -1.0 if runtime_state.last_health_result is None or runtime_state.last_health_result.latency_ms is None else runtime_state.last_health_result.latency_ms
+            lines = [
+                "mc_failover_up 1",
+                f"mc_failover_uptime_seconds {max(0.0, time.time() - runtime_state.started_at):.3f}",
+                f"mc_failover_active_connections {runtime_state.active_connections}",
+                f"mc_failover_total_connections {runtime_state.total_connections}",
+                f"mc_failover_rejected_connections {runtime_state.rejected_connections}",
+                f"mc_failover_main_healthy {1 if health.main_healthy else 0}",
+                f"mc_failover_last_health_latency_ms {last_latency:.3f}",
+                f'mc_failover_active_target{{target="MAIN"}} {1 if runtime_state.active_target == "MAIN" else 0}',
+                f'mc_failover_active_target{{target="FALLBACK"}} {1 if runtime_state.active_target == "FALLBACK" else 0}',
+                "",
+            ]
+            writer.write(text_response(200, "\n".join(lines), "text/plain; version=0.0.4; charset=utf-8"))
+        else:
+            writer.write(text_response(404, "not found\n", "text/plain; charset=utf-8"))
+        await writer.drain()
+    finally:
+        await close_writer(writer)
+
+
+async def start_monitoring_server(config: AppConfig, health: HealthState, runtime_state: RuntimeState, stop_event: asyncio.Event) -> Optional[asyncio.AbstractServer]:
+    if not config.monitoring.enabled:
+        return None
+    server = await asyncio.start_server(
+        lambda reader, writer: handle_monitoring_client(reader, writer, config, health, runtime_state),
+        config.monitoring.listen_host,
+        config.monitoring.listen_port,
+    )
+    sockets = ", ".join(str(sock.getsockname()) for sock in server.sockets or [])
+    log.info("Monitoring hört auf: %s", sockets)
+    return server
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Minecraft TCP Failover Proxy")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Pfad zur TOML-Konfiguration")
@@ -691,6 +862,7 @@ async def run() -> int:
 
     setup_logging(config.logging.level)
     health = HealthState(config.healthcheck.fail_after, config.healthcheck.recover_after)
+    runtime_state = RuntimeState(started_at=time.time())
 
     stop_event = asyncio.Event()
     limiter = ConnectionLimiter(config.connection.max_connections)
@@ -703,6 +875,9 @@ async def run() -> int:
 
     initial_result = await check_main_server(config)
     health.set_initial_state(initial_result.ok)
+    runtime_state.last_health_result = initial_result
+    runtime_state.last_health_check_at = time.time()
+    update_runtime_target(runtime_state, "MAIN" if health.main_healthy else "FALLBACK", "initial_healthcheck")
     health_target = get_healthcheck_target(config)
 
     log.info(
@@ -724,7 +899,7 @@ async def run() -> int:
 
     try:
         server = await asyncio.start_server(
-            lambda r, w: handle_client(config, health, limiter, r, w),
+            lambda r, w: handle_client(config, health, limiter, runtime_state, r, w),
             config.proxy.listen_host,
             config.proxy.listen_port,
             start_serving=True,
@@ -738,7 +913,15 @@ async def run() -> int:
         )
         return 1
 
-    health_task = asyncio.create_task(health_loop(config, health, stop_event))
+    try:
+        monitoring_server = await start_monitoring_server(config, health, runtime_state, stop_event)
+    except OSError as exc:
+        log.error("Konnte Monitoring-Listener nicht starten auf %s:%s: %s", config.monitoring.listen_host, config.monitoring.listen_port, exc)
+        server.close()
+        await server.wait_closed()
+        return 1
+
+    health_task = asyncio.create_task(health_loop(config, health, runtime_state, stop_event))
     sockets = ", ".join(str(sock.getsockname()) for sock in server.sockets or [])
     log.info("Proxy hört auf: %s", sockets)
 
@@ -748,6 +931,9 @@ async def run() -> int:
     finally:
         server.close()
         await server.wait_closed()
+        if monitoring_server is not None:
+            monitoring_server.close()
+            await monitoring_server.wait_closed()
         health_task.cancel()
         await asyncio.gather(health_task, return_exceptions=True)
         log.info("Proxy sauber beendet.")

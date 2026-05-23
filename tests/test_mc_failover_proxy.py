@@ -64,6 +64,7 @@ class ConfigTests(unittest.TestCase):
             healthcheck=m.HealthCheckConfig("tcp", 3.0, 2.0, 2, 2, None, None, 767, None, True, False, 0.0),
             connection=m.ConnectionConfig(5.0, 65536, 300.0, False, False, 4096),
             logging=m.LoggingConfig("INFO"),
+            monitoring=m.MonitoringConfig(False, "127.0.0.1", 8080, False),
         )
 
     def test_repo_config_toml_is_valid(self):
@@ -147,6 +148,10 @@ class ConfigTests(unittest.TestCase):
         self.assertIsNone(cfg.healthcheck.status_hostname)
         self.assertTrue(cfg.healthcheck.require_valid_json)
         self.assertFalse(cfg.healthcheck.log_status_details)
+        self.assertFalse(cfg.monitoring.enabled)
+        self.assertEqual(cfg.monitoring.listen_host, "127.0.0.1")
+        self.assertEqual(cfg.monitoring.listen_port, 8080)
+        self.assertFalse(cfg.monitoring.allow_remote)
 
     def test_new_healthcheck_config_parsing(self):
         text = VALID_CONFIG_TOML.replace('mode = "tcp"', 'mode = "minecraft_status"').replace(
@@ -224,6 +229,26 @@ class ConfigTests(unittest.TestCase):
         cfg = self.valid_config()
         good_hc = m.HealthCheckConfig("minecraft_status", 3, 2, 2, 2, "100.64.0.10", 25567, 767, None, True, False, 0.0)
         m.validate_config(m.AppConfig(**{**cfg.__dict__, "healthcheck": good_hc}))
+    
+    def test_monitoring_enabled_must_be_bool(self):
+        cfg = self.valid_config()
+        with self.assertRaises(m.ConfigError):
+            m.validate_config(m.AppConfig(**{**cfg.__dict__, "monitoring": m.MonitoringConfig("yes", "127.0.0.1", 8080, False)}))
+
+    def test_monitoring_port_validation(self):
+        cfg = self.valid_config()
+        for port in (0, 65536):
+            with self.assertRaises(m.ConfigError):
+                m.validate_config(m.AppConfig(**{**cfg.__dict__, "monitoring": m.MonitoringConfig(False, "127.0.0.1", port, False)}))
+
+    def test_monitoring_remote_bind_rejected_without_allow_remote(self):
+        cfg = self.valid_config()
+        with self.assertRaises(m.ConfigError):
+            m.validate_config(m.AppConfig(**{**cfg.__dict__, "monitoring": m.MonitoringConfig(True, "0.0.0.0", 8080, False)}))
+
+    def test_monitoring_remote_bind_allowed_with_allow_remote(self):
+        cfg = self.valid_config()
+        m.validate_config(m.AppConfig(**{**cfg.__dict__, "monitoring": m.MonitoringConfig(True, "0.0.0.0", 8080, True)}))
 
 
 class CoreBehaviorTests(unittest.TestCase):
@@ -264,6 +289,7 @@ class StatusProtocolTests(unittest.IsolatedAsyncioTestCase):
             healthcheck=m.HealthCheckConfig("tcp", 3, 2, 2, 2, None, None, 767, None, True, False, 0.0),
             connection=m.ConnectionConfig(5.0, 65536, 300.0, False, False, 4096),
             logging=m.LoggingConfig("INFO"),
+            monitoring=m.MonitoringConfig(False, "127.0.0.1", 8080, False),
         )
         self.assertEqual(m.get_healthcheck_target(cfg), m.TargetConfig("127.0.0.1", 25564))
         cfg_h = m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", 3, 2, 2, 2, "10.0.0.2", None, 767, None, True, False, 0.0)})
@@ -352,6 +378,7 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 overrides.get("max_connections", 1),
             ),
             logging=m.LoggingConfig("INFO"),
+            monitoring=m.MonitoringConfig(False, "127.0.0.1", 8080, False),
         )
 
     async def test_connection_limiter_accepts_then_rejects(self):
@@ -366,8 +393,9 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         health = m.HealthState(1, 1)
         health.set_initial_state(True)
         limiter = m.ConnectionLimiter(1)
+        runtime_state = m.RuntimeState(started_at=0.0)
         async def on_connect(reader, writer):
-            await m.handle_client(cfg, health, limiter, reader, writer)
+            await m.handle_client(cfg, health, limiter, runtime_state, reader, writer)
         listener = await asyncio.start_server(on_connect, "127.0.0.1", 0)
         port = listener.sockets[0].getsockname()[1]
         r, w = await asyncio.open_connection("127.0.0.1", port)
@@ -388,7 +416,8 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         cfg = self.make_config(port, port, idle_timeout_seconds=0.1)
         health = m.HealthState(1, 1); health.set_initial_state(True)
         limiter = m.ConnectionLimiter(10)
-        client_server = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, cr, cw), "127.0.0.1", 0)
+        runtime_state = m.RuntimeState(started_at=0.0)
+        client_server = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, runtime_state, cr, cw), "127.0.0.1", 0)
         pport = client_server.sockets[0].getsockname()[1]
         reader, writer = await asyncio.open_connection("127.0.0.1", pport)
         await asyncio.sleep(0.3)
@@ -411,7 +440,8 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         cfg = self.make_config(9, fb_port, connect_fallback_on_main_connect_failure=True, max_connections=10)
         health = m.HealthState(1, 1); health.set_initial_state(True)
         limiter = m.ConnectionLimiter(10)
-        proxy = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, cr, cw), "127.0.0.1", 0)
+        runtime_state = m.RuntimeState(started_at=0.0)
+        proxy = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, runtime_state, cr, cw), "127.0.0.1", 0)
         pport = proxy.sockets[0].getsockname()[1]
         r, w = await asyncio.open_connection("127.0.0.1", pport)
         w.write(b"abc"); await w.drain()
@@ -425,13 +455,63 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         cfg = self.make_config(9, 10, connect_fallback_on_main_connect_failure=True, max_connections=10)
         health = m.HealthState(1, 1); health.set_initial_state(True)
         limiter = m.ConnectionLimiter(10)
-        proxy = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, cr, cw), "127.0.0.1", 0)
+        runtime_state = m.RuntimeState(started_at=0.0)
+        proxy = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, runtime_state, cr, cw), "127.0.0.1", 0)
         pport = proxy.sockets[0].getsockname()[1]
         r, w = await asyncio.open_connection("127.0.0.1", pport)
         await asyncio.sleep(0.2)
         self.assertEqual(await r.read(1), b"")
         await m.close_writer(w)
         proxy.close(); await proxy.wait_closed()
+
+    async def test_runtime_state_counts_rejected_and_active_connections(self):
+        cfg = self.make_config(9, 10, connect_fallback_on_main_connect_failure=False, max_connections=1, timeout_seconds=0.05)
+        health = m.HealthState(1, 1); health.set_initial_state(True)
+        limiter = m.ConnectionLimiter(1)
+        runtime_state = m.RuntimeState(started_at=0.0)
+        listener = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, runtime_state, cr, cw), "127.0.0.1", 0)
+        port = listener.sockets[0].getsockname()[1]
+        try:
+            hold = await limiter.try_acquire()
+            self.assertTrue(hold)
+            r, w = await asyncio.open_connection("127.0.0.1", port)
+            await asyncio.sleep(0.1)
+            await m.close_writer(w)
+            self.assertEqual(runtime_state.rejected_connections, 1)
+            await limiter.release()
+
+            r2, w2 = await asyncio.open_connection("127.0.0.1", port)
+            await asyncio.sleep(0.2)
+            await m.close_writer(w2)
+            self.assertEqual(runtime_state.active_connections, 0)
+            self.assertEqual(runtime_state.total_connections, 1)
+        finally:
+            listener.close()
+            await listener.wait_closed()
+
+    async def test_monitoring_http_endpoints(self):
+        cfg = self.make_config(9, 10)
+        cfg = m.AppConfig(**{**cfg.__dict__, "monitoring": m.MonitoringConfig(True, "127.0.0.1", 0, False)})
+        health = m.HealthState(1, 1); health.set_initial_state(False)
+        runtime_state = m.RuntimeState(started_at=0.0, active_target="FALLBACK", last_health_result=m.HealthCheckResult(True, "status_json_ok", 12.3), last_health_check_at=1.0)
+        server = await m.start_monitoring_server(cfg, health, runtime_state, asyncio.Event())
+        port = server.sockets[0].getsockname()[1]
+        try:
+            async def req(raw: bytes) -> bytes:
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                writer.write(raw); await writer.drain()
+                data = await reader.read()
+                await m.close_writer(writer)
+                return data
+            self.assertIn(b"200 OK", await req(b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n"))
+            state_resp = await req(b"GET /state HTTP/1.1\r\nHost: x\r\n\r\n")
+            self.assertIn(b"active_connections", state_resp)
+            metrics_resp = await req(b"GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n")
+            self.assertIn(b"mc_failover_up 1", metrics_resp)
+            self.assertIn(b"404 Not Found", await req(b"GET /nope HTTP/1.1\r\nHost: x\r\n\r\n"))
+            self.assertIn(b"405 Method Not Allowed", await req(b"POST /health HTTP/1.1\r\nHost: x\r\n\r\n"))
+        finally:
+            server.close(); await server.wait_closed()
 
 if __name__ == "__main__":
     unittest.main()

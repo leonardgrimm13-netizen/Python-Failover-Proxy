@@ -231,6 +231,33 @@ Note: `ProtectHome=true` can block config files stored under home directories. P
 sudo ufw allow 25565/tcp
 ```
 
+## Monitoring
+
+Optional built-in HTTP monitoring endpoint (default disabled).
+
+```toml
+[monitoring]
+enabled = false
+listen_host = "127.0.0.1"
+listen_port = 8080
+allow_remote = false
+```
+
+Examples:
+
+```bash
+curl http://127.0.0.1:8080/health
+curl http://127.0.0.1:8080/ready
+curl http://127.0.0.1:8080/state
+curl http://127.0.0.1:8080/metrics
+```
+
+- Default is disabled.
+- Default binding is localhost-only.
+- Uptime Kuma: use `/health` or `/ready`.
+- Prometheus: scrape `/metrics` (text format).
+- Security: do **not** expose this monitoring port directly to the public internet. Prefer Tailscale, WireGuard, SSH tunnel, or authenticated reverse proxy.
+
 ## Tests and checks
 
 ```bash
