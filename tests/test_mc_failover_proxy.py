@@ -751,10 +751,16 @@ class MonitoringTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(b"active_connections", state_resp)
             metrics_resp = await req(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n")
             self.assertIn(b"mc_failover_total_connections", metrics_resp)
+            ready_resp = await req(b"GET /ready HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            self.assertIn(b'"active_target": "FALLBACK"', ready_resp)
+            self.assertIn(b'"main_healthy": true', ready_resp)
             not_found = await req(b"GET /nope HTTP/1.1\r\nHost: localhost\r\n\r\n")
             self.assertIn(b"404 Not Found", not_found)
             method = await req(b"POST /health HTTP/1.1\r\nHost: localhost\r\n\r\n")
             self.assertIn(b"405 Method Not Allowed", method)
+            too_many_headers = b"GET /health HTTP/1.1\r\n" + b"X-A: b\r\n" * 70 + b"\r\n"
+            bad = await req(too_many_headers)
+            self.assertIn(b"400 Bad Request", bad)
         finally:
             server.close(); await server.wait_closed()
 

@@ -24,6 +24,10 @@ MAX_VARINT_BYTES = 5
 MAX_STATUS_JSON_BYTES = 262144
 MAX_PACKET_BYTES = MAX_STATUS_JSON_BYTES + 4096
 RECOVERY_PROGRESS_LOG_INTERVAL_SECONDS = 15.0
+MAX_HTTP_REQUEST_LINE_BYTES = 4096
+MAX_HTTP_HEADER_LINES = 64
+MAX_HTTP_HEADER_BYTES = 16384
+HTTP_READ_TIMEOUT_SECONDS = 2.0
 
 log = logging.getLogger("mc-failover")
 
@@ -123,6 +127,11 @@ class RuntimeState:
     routing_reason: str = "startup"
     last_health_result: Optional[HealthCheckResult] = None
     last_health_check_at: Optional[float] = None
+
+
+def update_runtime_routing_state(runtime_state: RuntimeState, target_name: str, reason: str) -> None:
+    runtime_state.active_target = target_name
+    runtime_state.routing_reason = reason
 
 
 @dataclass(frozen=True)
@@ -738,8 +747,7 @@ async def handle_client(
 
     decision = choose_target_decision(config, health)
     target = decision.target
-    runtime_state.active_target = target.name
-    runtime_state.routing_reason = decision.reason
+    update_runtime_routing_state(runtime_state, target.name, decision.reason)
     log.info("Neue Verbindung von %s -> %s %s:%s reason=%s", peer, target.name, target.host, target.port, decision.reason)
     server_writer = None
     try:
@@ -764,6 +772,7 @@ async def handle_client(
                         asyncio.open_connection(fb.host, fb.port), timeout=config.connection.timeout_seconds
                     )
                     target = fb
+                    update_runtime_routing_state(runtime_state, "FALLBACK", "main_connect_failed_fallback_connect")
                 except Exception as fallback_exc:
                     log.error(
                         "MAIN connect fehlgeschlagen und FALLBACK connect ebenfalls fehlgeschlagen für %s (%s:%s, %s)",
@@ -843,6 +852,9 @@ async def health_loop(config: AppConfig, health: HealthState, runtime_state: Run
             runtime_state.last_health_result = result
             runtime_state.last_health_check_at = now
             changed_to = health.report(result.ok, now=now)
+            if changed_to is not None:
+                decision = choose_target_decision(config, health)
+                update_runtime_routing_state(runtime_state, decision.target.name, decision.reason)
             if config.healthcheck.log_status_details and result.ok:
                 log.info(
                     "Healthcheck ok (%s): latency=%.1fms version=%s players=%s/%s reason=%s",
@@ -906,8 +918,8 @@ async def handle_monitoring_client(
     reader: asyncio.StreamReader, writer: asyncio.StreamWriter, config: AppConfig, health: HealthState, runtime_state: RuntimeState
 ) -> None:
     try:
-        line = await asyncio.wait_for(reader.readline(), timeout=2.0)
-        if not line or len(line) > 4096:
+        line = await asyncio.wait_for(reader.readline(), timeout=HTTP_READ_TIMEOUT_SECONDS)
+        if not line or len(line) > MAX_HTTP_REQUEST_LINE_BYTES:
             writer.write(text_response(400, "bad request\n", "text/plain; charset=utf-8"))
             await writer.drain()
             return
@@ -917,10 +929,18 @@ async def handle_monitoring_client(
             writer.write(text_response(400, "bad request\n", "text/plain; charset=utf-8"))
             await writer.drain()
             return
+        header_lines = 0
+        header_bytes = 0
         while True:
-            h = await reader.readline()
+            h = await asyncio.wait_for(reader.readline(), timeout=HTTP_READ_TIMEOUT_SECONDS)
             if not h or h in (b"\r\n", b"\n"):
                 break
+            header_lines += 1
+            header_bytes += len(h)
+            if header_lines > MAX_HTTP_HEADER_LINES or header_bytes > MAX_HTTP_HEADER_BYTES:
+                writer.write(text_response(400, "bad request\n", "text/plain; charset=utf-8"))
+                await writer.drain()
+                return
         if method != "GET":
             writer.write(text_response(405, "method not allowed\n", "text/plain; charset=utf-8"))
             await writer.drain()
@@ -939,7 +959,17 @@ async def handle_monitoring_client(
             }
             writer.write(json_response(200, out))
         elif path == "/ready":
-            writer.write(json_response(200, {"ready": True, "service": "mc-failover"}))
+            writer.write(
+                json_response(
+                    200,
+                    {
+                        "ready": True,
+                        "service": "mc-failover",
+                        "active_target": runtime_state.active_target,
+                        "main_healthy": health.main_healthy,
+                    },
+                )
+            )
         elif path == "/state":
             writer.write(json_response(200, build_state_payload(health, runtime_state)))
         elif path == "/metrics":
@@ -1093,6 +1123,8 @@ async def run() -> int:
     health.set_initial_state(initial_result.ok)
     runtime_state.last_health_result = initial_result
     runtime_state.last_health_check_at = time.monotonic()
+    initial_decision = choose_target_decision(config, health)
+    update_runtime_routing_state(runtime_state, initial_decision.target.name, initial_decision.reason)
     health_target = get_healthcheck_target(config)
 
     log.info(

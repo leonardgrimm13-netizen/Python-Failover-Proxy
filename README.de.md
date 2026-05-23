@@ -372,10 +372,6 @@ python3 mc_failover_proxy.py --config config.toml --test-healthcheck
    - MAIN-Server zuhause über Tailscale erreichbar
    - FALLBACK auf VPS oder anderem erreichbaren Host.
 
----
-
-[English](README.md)
-
 ## Monitoring
 
 Optional ist ein eingebauter HTTP-Monitoring-Port verfügbar (standardmäßig deaktiviert).
@@ -394,3 +390,7 @@ Für Uptime Kuma nutze `/health` oder `/ready`, für Prometheus `/metrics`.
 Monitoring-Port nicht direkt öffentlich ins Internet öffnen. Besser über Tailscale, WireGuard, SSH-Tunnel oder Reverse Proxy mit Auth.
 
 Wenn du auf einem VPS arbeitest, lasse `listen_host` am besten auf `127.0.0.1` und greife per SSH-Tunnel oder Tailscale darauf zu.
+
+---
+
+[English](README.md)
