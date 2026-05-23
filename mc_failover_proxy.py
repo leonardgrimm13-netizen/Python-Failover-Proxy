@@ -694,8 +694,6 @@ async def minecraft_status_health_check(
             if isinstance(maximum, int):
                 players_max = maximum
 
-        if max_latency_ms > 0 and latency_ms > max_latency_ms:
-            return HealthCheckResult(False, "latency_too_high", latency_ms, version_name, players_online, players_max, motd_text)
         if expected_version_contains and (not version_name or expected_version_contains not in version_name):
             return HealthCheckResult(False, "version_mismatch", latency_ms, version_name, players_online, players_max, motd_text)
         if motd_must_contain and motd_must_contain not in motd_text:
