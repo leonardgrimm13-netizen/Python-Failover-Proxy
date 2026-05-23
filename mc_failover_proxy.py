@@ -584,9 +584,11 @@ def get_effective_maintenance_mode(config: AppConfig) -> tuple[str, str]:
 def choose_target_decision(config: AppConfig, health: HealthState) -> TargetDecision:
     mode, source = get_effective_maintenance_mode(config)
     if mode == "force_fallback":
-        return TargetDecision(Target("FALLBACK", config.fallback.host, config.fallback.port), f"{mode}_{source}", mode)
+        reason = "force_fallback_config" if source == "config" else "force_fallback_file"
+        return TargetDecision(Target("FALLBACK", config.fallback.host, config.fallback.port), reason, mode)
     if mode == "force_main":
-        return TargetDecision(Target("MAIN", config.main.host, config.main.port), f"{mode}_{source}", mode)
+        reason = "force_main_config" if source == "config" else "force_main_file"
+        return TargetDecision(Target("MAIN", config.main.host, config.main.port), reason, mode)
     current = config.main if health.main_healthy else config.fallback
     name = "MAIN" if health.main_healthy else "FALLBACK"
     reason = "health_main" if health.main_healthy else "health_fallback"

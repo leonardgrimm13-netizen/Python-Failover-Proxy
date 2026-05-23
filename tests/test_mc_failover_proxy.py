@@ -291,6 +291,41 @@ class CoreBehaviorTests(unittest.TestCase):
             ff.unlink()
             self.assertEqual(m.get_effective_maintenance_mode(cfg), ("force_main", "force_main_file"))
 
+    def test_choose_target_decision_reason_force_fallback_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            ff = Path(td) / "force_fallback"
+            ff.touch()
+            cfg = m.AppConfig(**{**m.load_config(REPO_ROOT / "config.toml").__dict__, "maintenance": m.MaintenanceConfig("auto", str(ff), None)})
+            state = m.HealthState(2, 2)
+            state.set_initial_state(True)
+            decision = m.choose_target_decision(cfg, state)
+            self.assertEqual(decision.target.name, "FALLBACK")
+            self.assertEqual(decision.reason, "force_fallback_file")
+
+    def test_choose_target_decision_reason_force_main_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            fm = Path(td) / "force_main"
+            fm.touch()
+            cfg = m.AppConfig(**{**m.load_config(REPO_ROOT / "config.toml").__dict__, "maintenance": m.MaintenanceConfig("auto", None, str(fm))})
+            state = m.HealthState(2, 2)
+            state.set_initial_state(False)
+            decision = m.choose_target_decision(cfg, state)
+            self.assertEqual(decision.target.name, "MAIN")
+            self.assertEqual(decision.reason, "force_main_file")
+
+    def test_choose_target_decision_both_files_prefers_force_fallback_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            ff = Path(td) / "force_fallback"
+            fm = Path(td) / "force_main"
+            ff.touch()
+            fm.touch()
+            cfg = m.AppConfig(**{**m.load_config(REPO_ROOT / "config.toml").__dict__, "maintenance": m.MaintenanceConfig("auto", str(ff), str(fm))})
+            state = m.HealthState(2, 2)
+            state.set_initial_state(False)
+            decision = m.choose_target_decision(cfg, state)
+            self.assertEqual(decision.target.name, "FALLBACK")
+            self.assertEqual(decision.reason, "force_fallback_file")
+
 
 class StatusProtocolTests(unittest.IsolatedAsyncioTestCase):
     async def test_varint_roundtrip_and_too_long(self):
