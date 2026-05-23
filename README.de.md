@@ -131,6 +131,11 @@ level = "INFO"
 | `healthcheck.require_valid_json` | Gültige JSON-Statusantwort erzwingen | `true` |
 | `healthcheck.log_status_details` | Erfolgreiche Version/Spieler/Latenz loggen | `false` |
 | `healthcheck.jitter_seconds` | Zufälliger Zusatz-Delay pro Check gegen gleichzeitige Bursts | `0.2` |
+| `healthcheck.max_latency_ms` | Maximale erlaubte Minecraft-Status-Latenz in ms (`0.0` = deaktiviert, funktioniert auch ohne JSON-Parsing) | `1500` |
+| `healthcheck.expected_version_contains` | Erforderlicher Textausschnitt in `version.name` beim `minecraft_status`-JSON (`""` = deaktiviert) | `1.21` |
+| `healthcheck.motd_must_contain` | Erforderlicher case-sensitiver Text in der MOTD (`""` = deaktiviert) | `READY` |
+| `healthcheck.motd_must_not_contain` | Verbotener case-sensitiver Text in der MOTD (`""` = deaktiviert) | `STARTING` |
+| `healthcheck.min_players_max` | Minimal erforderlicher `players.max`-Wert (`0` = deaktiviert) | `1` |
 | `connection.timeout_seconds` | Timeout für Upstream-Verbindungsaufbau | `5.0` |
 | `connection.buffer_size` | Puffergröße für TCP-Weiterleitung | `65536` |
 | `connection.idle_timeout_seconds` | Idle-Timeout für bestehende Proxy-Verbindungen (`0` = deaktiviert) | `300.0` |
@@ -152,7 +157,9 @@ Wichtige Einordnung:
 - In `config.example.toml` sind beide bewusst als empfohlene Produktionswerte auf `true` gesetzt.
 - `idle_timeout_seconds = 0` deaktiviert den Idle-Disconnect vollständig.
 - `force_fallback_file` hat Vorrang vor `force_main_file`, wenn beide Dateien existieren.
-
+- Textfilter sind case-sensitive.
+- JSON-basierte Filter brauchen `require_valid_json = true`.
+- `max_latency_ms` funktioniert auch bei `require_valid_json = false`.
 
 
 ## Recovery-Wartezeit nach MAIN-Rückkehr
@@ -235,6 +242,32 @@ Hinweise:
 - `log_status_details = true` protokolliert Version/Spieler/Latenz und kann bei kurzem Intervall viel Log erzeugen.
 - Backend muss Status-Pings erlauben (`enable-status=true` in `server.properties`).
 - `nc -vz` zeigt nur TCP-Erreichbarkeit; `minecraft_status` prüft Minecraft-typisches Statusverhalten.
+
+## Erweiterter Minecraft-Status-Check
+
+Paper/Velocity/Modpacks können bereits auf Status-Pings antworten, obwohl Plugins, Welten oder Datenbanken noch laden.
+Mit den optionalen `minecraft_status`-Filtern kannst du die Readiness deutlich zuverlässiger prüfen.
+
+```toml
+[healthcheck]
+mode = "minecraft_status"
+target_host = "100.64.0.10"
+target_port = 25567
+require_valid_json = true
+expected_version_contains = "1.21"
+motd_must_contain = "READY"
+motd_must_not_contain = "STARTING"
+max_latency_ms = 1500
+min_players_max = 1
+```
+
+- `enable-status=true` in `server.properties` ist nötig.
+- Bei Velocity/Paper prüfen, welches Ziel den Status-Ping wirklich beantwortet.
+- Textfilter sind case-sensitive.
+- JSON-basierte Filter (`expected_version_contains`, `motd_*`, `min_players_max`) brauchen `require_valid_json = true`.
+- `max_latency_ms` funktioniert auch bei `require_valid_json = false`.
+- READY-MOTD-Praxis: während Start/Restart `STARTING`, nach vollständigem Start `READY`.
+- MOTD-Filter sind nur ein Konfigurationssignal und ersetzen keinen echten Plugin-Readiness-Check.
 
 ## Start
 

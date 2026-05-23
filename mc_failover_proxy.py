@@ -63,6 +63,11 @@ class HealthCheckConfig:
     require_valid_json: bool
     log_status_details: bool
     jitter_seconds: float
+    max_latency_ms: float
+    expected_version_contains: str
+    motd_must_contain: str
+    motd_must_not_contain: str
+    min_players_max: int
 
 
 @dataclass(frozen=True)
@@ -73,6 +78,7 @@ class HealthCheckResult:
     version_name: Optional[str] = None
     players_online: Optional[int] = None
     players_max: Optional[int] = None
+    motd_text: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -308,6 +314,11 @@ def load_config(path: Path) -> AppConfig:
             require_valid_json=_read_optional(healthcheck, "require_valid_json", True),
             log_status_details=_read_optional(healthcheck, "log_status_details", False),
             jitter_seconds=_read_optional(healthcheck, "jitter_seconds", 0.0),
+            max_latency_ms=_read_optional(healthcheck, "max_latency_ms", 0.0),
+            expected_version_contains=_clean_required_string(_read_optional(healthcheck, "expected_version_contains", "")),
+            motd_must_contain=_clean_required_string(_read_optional(healthcheck, "motd_must_contain", "")),
+            motd_must_not_contain=_clean_required_string(_read_optional(healthcheck, "motd_must_not_contain", "")),
+            min_players_max=_read_optional(healthcheck, "min_players_max", 0),
         ),
         connection=ConnectionConfig(
             timeout_seconds=_read_required(connection, "connection", "timeout_seconds"),
@@ -394,6 +405,25 @@ def validate_config(config: AppConfig) -> None:
     if isinstance(config.healthcheck.jitter_seconds, bool) or not isinstance(config.healthcheck.jitter_seconds, (int, float)) or config.healthcheck.jitter_seconds < 0:
         raise ConfigError(f"healthcheck.jitter_seconds muss int oder float und >= 0 sein (aktuell: {config.healthcheck.jitter_seconds!r}).")
 
+    if isinstance(config.healthcheck.max_latency_ms, bool) or not isinstance(config.healthcheck.max_latency_ms, (int, float)) or config.healthcheck.max_latency_ms < 0:
+        raise ConfigError(f"healthcheck.max_latency_ms muss int oder float und >= 0 sein (aktuell: {config.healthcheck.max_latency_ms!r}).")
+    for key, value in (
+        ("healthcheck.expected_version_contains", config.healthcheck.expected_version_contains),
+        ("healthcheck.motd_must_contain", config.healthcheck.motd_must_contain),
+        ("healthcheck.motd_must_not_contain", config.healthcheck.motd_must_not_contain),
+    ):
+        if not isinstance(value, str):
+            raise ConfigError(f"{key} muss ein String sein (aktuell: {value!r}).")
+    if not _is_int(config.healthcheck.min_players_max) or config.healthcheck.min_players_max < 0:
+        raise ConfigError(f"healthcheck.min_players_max muss ein Integer >= 0 sein (aktuell: {config.healthcheck.min_players_max!r}).")
+    if (
+        config.healthcheck.expected_version_contains
+        or config.healthcheck.motd_must_contain
+        or config.healthcheck.motd_must_not_contain
+        or config.healthcheck.min_players_max > 0
+    ) and not config.healthcheck.require_valid_json:
+        raise ConfigError("healthcheck.require_valid_json muss true sein, wenn JSON-basierte minecraft_status Filter gesetzt sind.")
+
     if not isinstance(config.logging.level, str) or config.logging.level.upper() not in VALID_LOG_LEVELS:
         raise ConfigError("logging.level muss DEBUG, INFO, WARNING, ERROR oder CRITICAL sein.")
 
@@ -464,6 +494,33 @@ def validate_config(config: AppConfig) -> None:
             "monitoring.listen_host ist nicht lokal. Setze monitoring.allow_remote=true, wenn ein Remote-Bind gewünscht ist."
         )
 
+
+
+
+def extract_motd_text(description: Any) -> str:
+    if isinstance(description, str):
+        return description
+    if isinstance(description, dict):
+        parts: list[str] = []
+        text = description.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+        extra = description.get("extra")
+        if isinstance(extra, list):
+            parts.append(extract_motd_text(extra))
+        return "".join(parts)
+    if isinstance(description, list):
+        return "".join(extract_motd_text(item) for item in description)
+    return ""
+
+
+def _format_motd_for_log(motd_text: Optional[str], limit: int = 120) -> str:
+    if not motd_text:
+        return "n/a"
+    normalized = " ".join(motd_text.splitlines())
+    if len(normalized) > limit:
+        return normalized[: limit - 3] + "..."
+    return normalized
 
 def get_healthcheck_target(config: AppConfig) -> TargetConfig:
     host = config.healthcheck.target_host or config.main.host
@@ -569,6 +626,11 @@ async def minecraft_status_health_check(
     protocol_version: int,
     status_hostname: Optional[str],
     require_valid_json: bool,
+    max_latency_ms: float = 0.0,
+    expected_version_contains: str = "",
+    motd_must_contain: str = "",
+    motd_must_not_contain: str = "",
+    min_players_max: int = 0,
 ) -> HealthCheckResult:
     writer = None
     started = time.monotonic()
@@ -592,6 +654,8 @@ async def minecraft_status_health_check(
             return HealthCheckResult(ok=False, reason=f"invalid_packet_id:{packet_id}")
 
         latency_ms = (time.monotonic() - started) * 1000.0
+        if max_latency_ms > 0 and latency_ms > max_latency_ms:
+            return HealthCheckResult(ok=False, reason="latency_too_high", latency_ms=latency_ms)
         if not require_valid_json:
             return HealthCheckResult(ok=True, reason="status_packet_ok", latency_ms=latency_ms)
 
@@ -615,6 +679,7 @@ async def minecraft_status_health_check(
         version_name = None
         players_online = None
         players_max = None
+        motd_text = extract_motd_text(parsed.get("description"))
         version_data = parsed.get("version")
         if isinstance(version_data, dict):
             name = version_data.get("name")
@@ -629,6 +694,15 @@ async def minecraft_status_health_check(
             if isinstance(maximum, int):
                 players_max = maximum
 
+        if expected_version_contains and (not version_name or expected_version_contains not in version_name):
+            return HealthCheckResult(False, "version_mismatch", latency_ms, version_name, players_online, players_max, motd_text)
+        if motd_must_contain and motd_must_contain not in motd_text:
+            return HealthCheckResult(False, "motd_missing_required_text", latency_ms, version_name, players_online, players_max, motd_text)
+        if motd_must_not_contain and motd_must_not_contain in motd_text:
+            return HealthCheckResult(False, "motd_contains_forbidden_text", latency_ms, version_name, players_online, players_max, motd_text)
+        if min_players_max > 0 and (players_max is None or players_max < min_players_max):
+            return HealthCheckResult(False, "players_max_too_low", latency_ms, version_name, players_online, players_max, motd_text)
+
         return HealthCheckResult(
             ok=True,
             reason="status_json_ok",
@@ -636,6 +710,7 @@ async def minecraft_status_health_check(
             version_name=version_name,
             players_online=players_online,
             players_max=players_max,
+            motd_text=motd_text,
         )
     except (asyncio.TimeoutError, ConnectionError, OSError, asyncio.IncompleteReadError, ValueError, json.JSONDecodeError) as exc:
         log.debug("Minecraft-Status-Healthcheck fehlgeschlagen für %s:%s: %s", host, port, exc, exc_info=True)
@@ -655,6 +730,11 @@ async def check_main_server(config: AppConfig) -> HealthCheckResult:
         config.healthcheck.protocol_version,
         config.healthcheck.status_hostname,
         config.healthcheck.require_valid_json,
+        config.healthcheck.max_latency_ms,
+        config.healthcheck.expected_version_contains,
+        config.healthcheck.motd_must_contain,
+        config.healthcheck.motd_must_not_contain,
+        config.healthcheck.min_players_max,
     )
 
 
@@ -867,12 +947,13 @@ async def health_loop(config: AppConfig, health: HealthState, runtime_state: Run
                 update_runtime_routing_state(runtime_state, decision.target.name, decision.reason)
             if config.healthcheck.log_status_details and result.ok:
                 log.info(
-                    "Healthcheck ok (%s): latency=%.1fms version=%s players=%s/%s reason=%s",
+                    "Healthcheck ok (%s): latency=%.1fms version=%s players=%s/%s motd=\"%s\" reason=%s",
                     config.healthcheck.mode,
                     result.latency_ms if result.latency_ms is not None else -1,
                     result.version_name or "n/a",
                     result.players_online if result.players_online is not None else "n/a",
                     result.players_max if result.players_max is not None else "n/a",
+                    _format_motd_for_log(result.motd_text),
                     result.reason,
                 )
             elif not result.ok:

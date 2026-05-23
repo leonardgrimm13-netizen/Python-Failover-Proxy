@@ -44,6 +44,16 @@ require_valid_json = true
 # true: log successful status details (version/players/latency).
 # Can be noisy with low interval_seconds.
 log_status_details = false
+# Optional minecraft_status readiness filters.
+# 0 or empty values disable the filter.
+# Text filters are case-sensitive.
+# JSON-based filters require require_valid_json = true.
+# max_latency_ms also works without JSON parsing.
+max_latency_ms = 0.0
+expected_version_contains = ""
+motd_must_contain = ""
+motd_must_not_contain = ""
+min_players_max = 0
 
 interval_seconds = 3.0
 timeout_seconds = 2.0

@@ -131,6 +131,11 @@ level = "INFO"
 | `healthcheck.require_valid_json` | Require valid JSON status response | `true` |
 | `healthcheck.log_status_details` | Log version/players/latency on success | `false` |
 | `healthcheck.jitter_seconds` | Random delay added per check to reduce synchronized bursts | `0.2` |
+| `healthcheck.max_latency_ms` | Maximum accepted Minecraft status latency in ms (`0.0` = disabled, works without JSON parsing) | `1500` |
+| `healthcheck.expected_version_contains` | Required substring in `version.name` for `minecraft_status` JSON (`""` = disabled) | `1.21` |
+| `healthcheck.motd_must_contain` | Required case-sensitive text in MOTD (`""` = disabled) | `READY` |
+| `healthcheck.motd_must_not_contain` | Forbidden case-sensitive text in MOTD (`""` = disabled) | `STARTING` |
+| `healthcheck.min_players_max` | Minimum required `players.max` value (`0` = disabled) | `1` |
 | `connection.timeout_seconds` | Upstream connection timeout | `5.0` |
 | `connection.buffer_size` | TCP forwarding buffer size | `65536` |
 | `connection.idle_timeout_seconds` | Idle timeout for established proxied connections (`0` = disabled) | `300.0` |
@@ -152,7 +157,9 @@ Guidance:
 - The `config.example.toml` intentionally enables both (`true`) as recommended production defaults for new installs.
 - `idle_timeout_seconds = 0` disables idle disconnects completely.
 - `force_fallback_file` has priority over `force_main_file` when both files exist.
-
+- Text filters are case-sensitive.
+- JSON-based filters require `require_valid_json = true`.
+- `max_latency_ms` also works with `require_valid_json = false`.
 
 
 ## Recovery stabilization after MAIN comes back
@@ -234,6 +241,32 @@ Notes:
 - `log_status_details = true` logs successful version/player/latency details and can be noisy with short intervals.
 - Backend server must allow status pings (`enable-status=true` in `server.properties`).
 - `nc -vz` only proves TCP reachability; `minecraft_status` verifies Minecraft-like status behavior.
+
+## Advanced Minecraft status checks
+
+Minecraft servers may answer status pings before plugins, worlds, or databases are truly ready.
+Use these optional `minecraft_status` filters to gate readiness more reliably.
+
+```toml
+[healthcheck]
+mode = "minecraft_status"
+target_host = "100.64.0.10"
+target_port = 25567
+require_valid_json = true
+expected_version_contains = "1.21"
+motd_must_contain = "READY"
+motd_must_not_contain = "STARTING"
+max_latency_ms = 1500
+min_players_max = 1
+```
+
+- `enable-status=true` in `server.properties` is required.
+- For Velocity/Paper setups, verify which target actually answers the status ping.
+- Filters are case-sensitive for text matching.
+- JSON-based filters (`expected_version_contains`, `motd_*`, `min_players_max`) require `require_valid_json = true`.
+- `max_latency_ms` also works with `require_valid_json = false`.
+- READY-MOTD practice: use `STARTING` during startup/restart and switch to `READY` when the server is fully ready.
+- MOTD filters are only as good as your server configuration and do not replace plugin-level readiness checks.
 
 ## Start
 
