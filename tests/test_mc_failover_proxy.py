@@ -51,6 +51,21 @@ class DummyReader:
         return out
 
 
+async def read_until_contains(reader, needle: bytes, timeout: float = 2.0) -> bytes:
+    data = bytearray()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while needle not in data:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        chunk = await asyncio.wait_for(reader.read(1024), timeout=remaining)
+        if not chunk:
+            break
+        data.extend(chunk)
+    return bytes(data)
+
+
 class ConfigTests(unittest.TestCase):
     def write_temp_config(self, text: str = VALID_CONFIG_TOML) -> Path:
         td = tempfile.TemporaryDirectory()
@@ -874,8 +889,10 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_proxy_protocol_send_writes_header_before_payload(self):
         got = bytearray()
+        done = asyncio.Event()
         async def backend(reader, writer):
-            got.extend(await reader.read(1024))
+            got.extend(await read_until_contains(reader, b"HELLO", timeout=2.0))
+            done.set()
             await m.close_writer(writer)
         srv = await asyncio.start_server(backend, "127.0.0.1", 0)
         port = srv.sockets[0].getsockname()[1]
@@ -887,7 +904,7 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         pport = proxy.sockets[0].getsockname()[1]
         r, w = await asyncio.open_connection("127.0.0.1", pport)
         w.write(b"HELLO"); await w.drain()
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(done.wait(), timeout=2.5)
         self.assertIn(b"PROXY TCP4 ", bytes(got))
         self.assertTrue(bytes(got).endswith(b"\r\nHELLO"))
         await m.close_writer(w); await r.read(1)
@@ -895,8 +912,10 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_proxy_protocol_accept_and_send_uses_client_ip_from_inbound_header(self):
         got = bytearray()
+        done = asyncio.Event()
         async def backend(reader, writer):
-            got.extend(await reader.read(1024))
+            got.extend(await read_until_contains(reader, b"HELLO", timeout=2.0))
+            done.set()
             await m.close_writer(writer)
         srv = await asyncio.start_server(backend, "127.0.0.1", 0)
         port = srv.sockets[0].getsockname()[1]
@@ -907,7 +926,7 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         pport = proxy.sockets[0].getsockname()[1]
         r, w = await asyncio.open_connection("127.0.0.1", pport)
         w.write(b"PROXY TCP4 203.0.113.10 127.0.0.1 54321 25565\r\nHELLO"); await w.drain()
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(done.wait(), timeout=2.5)
         self.assertIn(b"PROXY TCP4 203.0.113.10 ", bytes(got))
         self.assertTrue(bytes(got).endswith(b"\r\nHELLO"))
         await m.close_writer(w); await r.read(1)
@@ -915,8 +934,10 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_proxy_protocol_send_on_main_failure_to_fallback(self):
         got = bytearray()
+        done = asyncio.Event()
         async def fb_backend(reader, writer):
-            got.extend(await reader.read(1024))
+            got.extend(await read_until_contains(reader, b"HELLO", timeout=2.0))
+            done.set()
             await m.close_writer(writer)
         fb = await asyncio.start_server(fb_backend, "127.0.0.1", 0)
         fb_port = fb.sockets[0].getsockname()[1]
@@ -927,7 +948,7 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         pport = proxy.sockets[0].getsockname()[1]
         r, w = await asyncio.open_connection("127.0.0.1", pport)
         w.write(b"HELLO"); await w.drain()
-        await asyncio.sleep(0.25)
+        await asyncio.wait_for(done.wait(), timeout=2.5)
         self.assertIn(b"PROXY TCP4 ", bytes(got))
         self.assertTrue(bytes(got).endswith(b"\r\nHELLO"))
         await m.close_writer(w); await r.read(1)
@@ -951,8 +972,10 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_proxy_protocol_send_family_mismatch_falls_back_to_unknown(self):
         got = bytearray()
+        done = asyncio.Event()
         async def backend(reader, writer):
-            got.extend(await reader.read(1024))
+            got.extend(await read_until_contains(reader, b"HELLO", timeout=2.0))
+            done.set()
             await m.close_writer(writer)
         srv = await asyncio.start_server(backend, "127.0.0.1", 0)
         port = srv.sockets[0].getsockname()[1]
@@ -964,7 +987,7 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch("mc_failover_proxy.build_proxy_v1_header", side_effect=ValueError("family mismatch")):
             r, w = await asyncio.open_connection("127.0.0.1", pport)
             w.write(b"PROXY TCP4 203.0.113.10 127.0.0.1 54321 25565\r\nHELLO"); await w.drain()
-            await asyncio.sleep(0.25)
+            await asyncio.wait_for(done.wait(), timeout=2.5)
             await m.close_writer(w); await r.read(1)
         self.assertTrue(bytes(got).startswith(b"PROXY UNKNOWN\r\n"))
         self.assertTrue(bytes(got).endswith(b"HELLO"))
