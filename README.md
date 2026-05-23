@@ -95,6 +95,7 @@ interval_seconds = 3.0
 timeout_seconds = 2.0
 fail_after = 2
 recover_after = 2
+min_recovery_seconds = 0.0
 
 [connection]
 timeout_seconds = 5.0
@@ -122,6 +123,7 @@ level = "INFO"
 | `healthcheck.timeout_seconds` | Timeout per healthcheck attempt | `2.0` |
 | `healthcheck.fail_after` | Consecutive failures before switch to FALLBACK | `2` |
 | `healthcheck.recover_after` | Consecutive successes before switch back to MAIN | `2` |
+| `healthcheck.min_recovery_seconds` | Additional healthy time required before switchback (`0.0` = disabled) | `30.0` |
 | `healthcheck.target_host` | Optional host for healthcheck target override | `100.64.0.10` |
 | `healthcheck.target_port` | Optional port for healthcheck target override | `25567` |
 | `healthcheck.protocol_version` | Status handshake protocol version (default) | `767` |
@@ -150,6 +152,29 @@ Guidance:
 - The `config.example.toml` intentionally enables both (`true`) as recommended production defaults for new installs.
 - `idle_timeout_seconds = 0` disables idle disconnects completely.
 - `force_fallback_file` has priority over `force_main_file` when both files exist.
+
+
+
+## Recovery stabilization after MAIN comes back
+
+Minecraft servers (Paper/Spigot/Velocity + plugins/modpacks/databases) can answer TCP/status checks before they are truly ready for players.
+
+- `recover_after`: how many consecutive successful checks are required.
+- `min_recovery_seconds`: additional continuous healthy time required after MAIN starts answering again.
+
+Both conditions must be met for `FALLBACK -> MAIN` switchback. With `min_recovery_seconds = 0.0`, behavior is unchanged (backward compatible).
+
+Example:
+
+```toml
+[healthcheck]
+interval_seconds = 3.0
+fail_after = 2
+recover_after = 3
+min_recovery_seconds = 30.0
+```
+
+Meaning: outage is detected after about 6 seconds; switchback requires 3 successful checks **and** at least 30 seconds of stable recovery.
 
 ## Maintenance mode / force fallback
 
