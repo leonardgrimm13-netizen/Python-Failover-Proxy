@@ -1,0 +1,15 @@
+[Unit]
+Description=Minecraft Failover Proxy
+After=network.target
+
+[Service]
+Type=simple
+User=mcproxy
+Group=mcproxy
+WorkingDirectory=/opt/mc-failover
+ExecStart=/opt/mc-failover/.venv/bin/python /opt/mc-failover/mc_failover_proxy.py --config /etc/mc-failover/config.toml
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

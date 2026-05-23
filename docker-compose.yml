@@ -1,0 +1,12 @@
+services:
+  mc-failover:
+    build: .
+    ports:
+      - "25565:25565"
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+    # Optional monitoring port:
+    # - "8080:8080"
+    # Optional Linux host mapping:
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
