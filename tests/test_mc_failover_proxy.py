@@ -64,6 +64,7 @@ class ConfigTests(unittest.TestCase):
             healthcheck=m.HealthCheckConfig("tcp", 3.0, 2.0, 2, 2, None, None, 767, None, True, False, 0.0),
             connection=m.ConnectionConfig(5.0, 65536, 300.0, False, False, 4096),
             logging=m.LoggingConfig("INFO"),
+            maintenance=m.MaintenanceConfig("auto", None, None),
         )
 
     def test_repo_config_toml_is_valid(self):
@@ -147,6 +148,14 @@ class ConfigTests(unittest.TestCase):
         self.assertIsNone(cfg.healthcheck.status_hostname)
         self.assertTrue(cfg.healthcheck.require_valid_json)
         self.assertFalse(cfg.healthcheck.log_status_details)
+        self.assertEqual(cfg.maintenance.mode, "auto")
+        self.assertIsNone(cfg.maintenance.force_fallback_file)
+        self.assertIsNone(cfg.maintenance.force_main_file)
+
+    def test_invalid_maintenance_mode(self):
+        text = VALID_CONFIG_TOML + '\n[maintenance]\nmode = "broken"\n'
+        with self.assertRaises(m.ConfigError):
+            m.load_config(self.write_temp_config(text))
 
     def test_new_healthcheck_config_parsing(self):
         text = VALID_CONFIG_TOML.replace('mode = "tcp"', 'mode = "minecraft_status"').replace(
@@ -166,8 +175,6 @@ class ConfigTests(unittest.TestCase):
             'target_port = "abc"',
             "target_port = 0",
             "target_port = 65536",
-            'target_host = " "',
-            'status_hostname = " "',
             "protocol_version = 0",
             'require_valid_json = "yes"',
             'log_status_details = "yes"',
@@ -247,6 +254,78 @@ class CoreBehaviorTests(unittest.TestCase):
         state.set_initial_state(False)
         self.assertEqual(m.choose_target(cfg, state).name, "FALLBACK")
 
+    def test_maintenance_mode_auto_behaves_like_health(self):
+        cfg = m.load_config(REPO_ROOT / "config.toml")
+        state = m.HealthState(2, 2)
+        state.set_initial_state(True)
+        self.assertEqual(m.choose_target_decision(cfg, state).reason, "health_main")
+        state.set_initial_state(False)
+        self.assertEqual(m.choose_target_decision(cfg, state).reason, "health_fallback")
+
+    def test_force_fallback_routes_even_if_main_healthy(self):
+        cfg = m.AppConfig(**{**m.load_config(REPO_ROOT / "config.toml").__dict__, "maintenance": m.MaintenanceConfig("force_fallback", None, None)})
+        state = m.HealthState(2, 2)
+        state.set_initial_state(True)
+        decision = m.choose_target_decision(cfg, state)
+        self.assertEqual(decision.target.name, "FALLBACK")
+        self.assertEqual(decision.reason, "force_fallback_config")
+
+    def test_force_main_routes_even_if_main_unhealthy(self):
+        cfg = m.AppConfig(**{**m.load_config(REPO_ROOT / "config.toml").__dict__, "maintenance": m.MaintenanceConfig("force_main", None, None)})
+        state = m.HealthState(2, 2)
+        state.set_initial_state(False)
+        decision = m.choose_target_decision(cfg, state)
+        self.assertEqual(decision.target.name, "MAIN")
+        self.assertEqual(decision.reason, "force_main_config")
+
+    def test_file_overrides_and_priority_and_dynamic(self):
+        with tempfile.TemporaryDirectory() as td:
+            ff = Path(td) / "force_fallback"
+            fm = Path(td) / "force_main"
+            cfg = m.AppConfig(**{**m.load_config(REPO_ROOT / "config.toml").__dict__, "maintenance": m.MaintenanceConfig("auto", str(ff), str(fm))})
+            self.assertEqual(m.get_effective_maintenance_mode(cfg), ("auto", "auto"))
+            fm.touch()
+            self.assertEqual(m.get_effective_maintenance_mode(cfg), ("force_main", "force_main_file"))
+            ff.touch()
+            self.assertEqual(m.get_effective_maintenance_mode(cfg), ("force_fallback", "force_fallback_file"))
+            ff.unlink()
+            self.assertEqual(m.get_effective_maintenance_mode(cfg), ("force_main", "force_main_file"))
+
+    def test_choose_target_decision_reason_force_fallback_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            ff = Path(td) / "force_fallback"
+            ff.touch()
+            cfg = m.AppConfig(**{**m.load_config(REPO_ROOT / "config.toml").__dict__, "maintenance": m.MaintenanceConfig("auto", str(ff), None)})
+            state = m.HealthState(2, 2)
+            state.set_initial_state(True)
+            decision = m.choose_target_decision(cfg, state)
+            self.assertEqual(decision.target.name, "FALLBACK")
+            self.assertEqual(decision.reason, "force_fallback_file")
+
+    def test_choose_target_decision_reason_force_main_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            fm = Path(td) / "force_main"
+            fm.touch()
+            cfg = m.AppConfig(**{**m.load_config(REPO_ROOT / "config.toml").__dict__, "maintenance": m.MaintenanceConfig("auto", None, str(fm))})
+            state = m.HealthState(2, 2)
+            state.set_initial_state(False)
+            decision = m.choose_target_decision(cfg, state)
+            self.assertEqual(decision.target.name, "MAIN")
+            self.assertEqual(decision.reason, "force_main_file")
+
+    def test_choose_target_decision_both_files_prefers_force_fallback_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            ff = Path(td) / "force_fallback"
+            fm = Path(td) / "force_main"
+            ff.touch()
+            fm.touch()
+            cfg = m.AppConfig(**{**m.load_config(REPO_ROOT / "config.toml").__dict__, "maintenance": m.MaintenanceConfig("auto", str(ff), str(fm))})
+            state = m.HealthState(2, 2)
+            state.set_initial_state(False)
+            decision = m.choose_target_decision(cfg, state)
+            self.assertEqual(decision.target.name, "FALLBACK")
+            self.assertEqual(decision.reason, "force_fallback_file")
+
 
 class StatusProtocolTests(unittest.IsolatedAsyncioTestCase):
     async def test_varint_roundtrip_and_too_long(self):
@@ -264,6 +343,7 @@ class StatusProtocolTests(unittest.IsolatedAsyncioTestCase):
             healthcheck=m.HealthCheckConfig("tcp", 3, 2, 2, 2, None, None, 767, None, True, False, 0.0),
             connection=m.ConnectionConfig(5.0, 65536, 300.0, False, False, 4096),
             logging=m.LoggingConfig("INFO"),
+            maintenance=m.MaintenanceConfig("auto", None, None),
         )
         self.assertEqual(m.get_healthcheck_target(cfg), m.TargetConfig("127.0.0.1", 25564))
         cfg_h = m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", 3, 2, 2, 2, "10.0.0.2", None, 767, None, True, False, 0.0)})
@@ -352,6 +432,7 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 overrides.get("max_connections", 1),
             ),
             logging=m.LoggingConfig("INFO"),
+            maintenance=m.MaintenanceConfig("auto", None, None),
         )
 
     async def test_connection_limiter_accepts_then_rejects(self):
