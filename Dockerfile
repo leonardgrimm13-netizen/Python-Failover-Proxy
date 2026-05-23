@@ -3,7 +3,9 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-RUN useradd --create-home --shell /usr/sbin/nologin mcfailover
+RUN useradd --create-home --shell /usr/sbin/nologin mcfailover \
+    && mkdir -p /config \
+    && chown -R mcfailover:mcfailover /config
 
 WORKDIR /app
 

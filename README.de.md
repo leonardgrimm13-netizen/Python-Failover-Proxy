@@ -329,6 +329,26 @@ Hinweise:
 - MAIN und FALLBACK müssen aus dem Container erreichbar sein.
 - Auf Linux kannst du für Host-Zugriffe `host.docker.internal` via `host-gateway` aktivieren (Beispiel ist in `docker-compose.yml` auskommentiert enthalten).
 
+
+Wenn MAIN/FALLBACK auf demselben Linux-Host wie Docker laufen, aktiviere in `docker-compose.yml` das Host-Gateway-Mapping:
+
+```yaml
+extra_hosts:
+  - "host.docker.internal:host-gateway"
+```
+
+Verwende dann den Host in `config.toml` für die Upstreams:
+
+```toml
+[main]
+host = "host.docker.internal"
+port = 25564
+
+[fallback]
+host = "host.docker.internal"
+port = 25566
+```
+
 ## systemd
 
 Für einen produktionsnahen systemd-Betrieb nutze:

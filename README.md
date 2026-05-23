@@ -328,6 +328,26 @@ Notes:
 - MAIN and FALLBACK must be reachable from inside the container.
 - On Linux, if host services must be reached, enable `host.docker.internal` via `host-gateway` (example is included as comments in `docker-compose.yml`).
 
+
+If MAIN/FALLBACK run on the same Linux host as Docker, enable host gateway mapping in `docker-compose.yml`:
+
+```yaml
+extra_hosts:
+  - "host.docker.internal:host-gateway"
+```
+
+Then reference the host from `config.toml` for upstreams:
+
+```toml
+[main]
+host = "host.docker.internal"
+port = 25564
+
+[fallback]
+host = "host.docker.internal"
+port = 25566
+```
+
 ## systemd
 
 For production systemd deployment, use:

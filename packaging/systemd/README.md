@@ -34,21 +34,27 @@ sudo chown -R mcfailover:mcfailover /var/lib/mc-failover /run/mc-failover
 sudo chmod 644 /etc/mc-failover/config.toml
 ```
 
-## 5) Install dependencies
+## 5) Install dependencies (recommended: virtual environment)
 
-```bash
-cd /opt/mc-failover
-sudo python3 -m pip install -r requirements.txt
-```
-
-Optional: use a virtual environment instead of system-wide site packages:
+Using a venv avoids distro-level `pip` restrictions (for example PEP 668 / externally-managed environments on Ubuntu/Debian).
 
 ```bash
 python3 -m venv /opt/mc-failover/.venv
 /opt/mc-failover/.venv/bin/python -m pip install -r /opt/mc-failover/requirements.txt
 ```
 
-If you use the virtual environment, update `ExecStart` in `packaging/systemd/mc-failover.service` to use `/opt/mc-failover/.venv/bin/python`.
+Update `ExecStart` in `packaging/systemd/mc-failover.service` to use the venv interpreter:
+
+```ini
+ExecStart=/opt/mc-failover/.venv/bin/python /opt/mc-failover/mc_failover_proxy.py --config /etc/mc-failover/config.toml
+```
+
+Optional fallback (not preferred): system-wide install
+
+```bash
+cd /opt/mc-failover
+sudo python3 -m pip install -r requirements.txt
+```
 
 ## 6) Install and start service
 
