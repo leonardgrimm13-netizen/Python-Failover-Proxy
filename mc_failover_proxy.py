@@ -517,9 +517,6 @@ async def tcp_health_check(host: str, port: int, timeout: float) -> HealthCheckR
     except Exception as exc:
         log.debug("TCP-Healthcheck fehlgeschlagen für %s:%s: %s", host, port, exc, exc_info=True)
         return HealthCheckResult(ok=False, reason=f"tcp_connect_failed: {exc.__class__.__name__}")
-    except asyncio.TimeoutError:
-        writer.write(text_response(408, "request timeout\n", "text/plain; charset=utf-8"))
-        await writer.drain()
     finally:
         await close_writer(writer)
 
@@ -643,9 +640,6 @@ async def minecraft_status_health_check(
     except (asyncio.TimeoutError, ConnectionError, OSError, asyncio.IncompleteReadError, ValueError, json.JSONDecodeError) as exc:
         log.debug("Minecraft-Status-Healthcheck fehlgeschlagen für %s:%s: %s", host, port, exc, exc_info=True)
         return HealthCheckResult(ok=False, reason=f"status_check_failed: {exc.__class__.__name__}")
-    except asyncio.TimeoutError:
-        writer.write(text_response(408, "request timeout\n", "text/plain; charset=utf-8"))
-        await writer.drain()
     finally:
         await close_writer(writer)
 

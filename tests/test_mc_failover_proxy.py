@@ -594,6 +594,12 @@ class StatusProtocolTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse((await m.minecraft_status_health_check("127.0.0.1", 9, 0.01, 767, None, True)).ok)
 
+    async def test_tcp_health_check_timeout_returns_result(self):
+        with mock.patch("asyncio.open_connection", new=mock.AsyncMock(side_effect=asyncio.TimeoutError())):
+            result = await m.tcp_health_check("127.0.0.1", 25564, 0.01)
+        self.assertFalse(result.ok)
+        self.assertIn("TimeoutError", result.reason)
+
 
 class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
     def make_config(self, main_port: int, fallback_port: int, **overrides) -> m.AppConfig:
