@@ -292,6 +292,23 @@ python3 -m py_compile mc_failover_proxy.py
 python3 -m compileall .
 ```
 
+## CLI-Checks für Admins (ohne Listener-Start)
+
+Diese Befehle laden/validieren die Config und führen gezielte Tests aus, **ohne** den produktiven Proxy-Listener zu starten. Praktisch vor `systemctl enable/start` sowie für VPS-, Tailscale-, Velocity- und HAProxy-Debugging.
+
+```bash
+python3 mc_failover_proxy.py --config config.toml --check-config
+python3 mc_failover_proxy.py --config config.toml --print-effective-config
+python3 mc_failover_proxy.py --config config.toml --test-main
+python3 mc_failover_proxy.py --config config.toml --test-fallback
+python3 mc_failover_proxy.py --config config.toml --test-healthcheck
+```
+
+- `--test-main` prüft das reine TCP-Routing-Ziel von MAIN.
+- `--test-fallback` prüft das reine TCP-Routing-Ziel von FALLBACK.
+- `--test-healthcheck` prüft genau die konfigurierte Healthcheck-Entscheidung (`tcp` oder `minecraft_status`).
+- Wenn `--test-main` erfolgreich ist, aber `--test-healthcheck` fehlschlägt, ist meistens Minecraft-Status-Ping (`enable-status`), `status_hostname` oder `protocol_version` die Ursache.
+
 ## Fehlersuche (Troubleshooting)
 
 - `config.toml` nicht gefunden:
