@@ -611,9 +611,12 @@ def set_tcp_keepalive(writer: Optional[asyncio.StreamWriter]) -> None:
 
 
 def is_trusted_proxy(peer_ip: str, trusted_entries: tuple[str, ...]) -> bool:
+    try:
+        peer = ipaddress.ip_address(peer_ip)
+    except ValueError:
+        return False
     if not trusted_entries:
         return True
-    peer = ipaddress.ip_address(peer_ip)
     for entry in trusted_entries:
         if peer in ipaddress.ip_network(entry, strict=False):
             return True
@@ -932,34 +935,25 @@ async def handle_client(
         return
     runtime_state.active_connections += 1
     runtime_state.total_connections += 1
-
-    decision = choose_target_decision(config, health)
-    target = decision.target
-    update_runtime_routing_state(runtime_state, target.name, decision.reason)
-    if config.proxy_protocol.accept:
-        if not peer_ip:
-            log.warning("PROXY protocol rejected: peer IP konnte nicht bestimmt werden (%s)", peer)
-            await close_writer(client_writer)
-            await limiter.release()
-            runtime_state.active_connections = max(0, runtime_state.active_connections - 1)
-            return
-        if not is_trusted_proxy(peer_ip, config.proxy_protocol.trusted_proxy_ips):
-            log.warning("PROXY protocol rejected from untrusted peer %s", peer_ip)
-            await close_writer(client_writer)
-            await limiter.release()
-            runtime_state.active_connections = max(0, runtime_state.active_connections - 1)
-            return
-        try:
-            inbound_proxy_info = await read_proxy_v1_header(client_reader, config.connection.timeout_seconds)
-        except Exception as exc:
-            log.warning("PROXY protocol header invalid from %s: %s", peer, exc.__class__.__name__)
-            await close_writer(client_writer)
-            await limiter.release()
-            runtime_state.active_connections = max(0, runtime_state.active_connections - 1)
-            return
-    log.info("Neue Verbindung von %s -> %s %s:%s reason=%s", peer, target.name, target.host, target.port, decision.reason)
     server_writer = None
+    target = Target("UNKNOWN", "unknown", 0)
     try:
+        decision = choose_target_decision(config, health)
+        target = decision.target
+        update_runtime_routing_state(runtime_state, target.name, decision.reason)
+        if config.proxy_protocol.accept:
+            if not peer_ip:
+                log.warning("PROXY protocol rejected: peer IP konnte nicht bestimmt werden (%s)", peer)
+                return
+            if not is_trusted_proxy(peer_ip, config.proxy_protocol.trusted_proxy_ips):
+                log.warning("PROXY protocol rejected from untrusted peer %s", peer_ip)
+                return
+            try:
+                inbound_proxy_info = await read_proxy_v1_header(client_reader, config.connection.timeout_seconds)
+            except Exception as exc:
+                log.warning("PROXY protocol header invalid from %s: %s", peer, exc.__class__.__name__)
+                return
+        log.info("Neue Verbindung von %s -> %s %s:%s reason=%s", peer, target.name, target.host, target.port, decision.reason)
         try:
             server_reader, server_writer = await asyncio.wait_for(
                 asyncio.open_connection(target.host, target.port), timeout=config.connection.timeout_seconds
@@ -1015,7 +1009,11 @@ async def handle_client(
                     log.warning("Backend peername ungültig, sende PROXY UNKNOWN zu %s", target.name)
                     server_writer.write(build_proxy_unknown_header())
                 else:
-                    server_writer.write(build_proxy_v1_header(src_ip, backend_ip, src_port, backend_port))
+                    try:
+                        server_writer.write(build_proxy_v1_header(src_ip, backend_ip, src_port, backend_port))
+                    except ValueError as exc:
+                        log.warning("PROXY family mismatch/invalid data (%s), sende PROXY UNKNOWN zu %s", exc, target.name)
+                        server_writer.write(build_proxy_unknown_header())
                 await server_writer.drain()
             except Exception as exc:
                 log.error("Senden von PROXY protocol fehlgeschlagen: %s", exc)

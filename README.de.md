@@ -493,9 +493,6 @@ Danach sollte in der Antwort `active_target="FALLBACK"` und `routing_reason="for
 
 Wenn du auf einem VPS arbeitest, lasse `listen_host` am besten auf `127.0.0.1` und greife per SSH-Tunnel oder Tailscale darauf zu.
 
----
-
-[English](README.md)
 
 ## PROXY-Protokoll
 
@@ -531,4 +528,6 @@ backend mc_failover
 ```
 
 `send-proxy-v2` ist PROXY protocol v2 und wird hier nicht unterstützt.
+---
 
+[English](README.md)

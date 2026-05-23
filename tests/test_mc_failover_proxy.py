@@ -872,6 +872,104 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         await m.close_writer(w); await r.read(1)
         proxy.close(); await proxy.wait_closed(); srv.close(); await srv.wait_closed()
 
+    async def test_proxy_protocol_send_writes_header_before_payload(self):
+        got = bytearray()
+        async def backend(reader, writer):
+            got.extend(await reader.read(1024))
+            await m.close_writer(writer)
+        srv = await asyncio.start_server(backend, "127.0.0.1", 0)
+        port = srv.sockets[0].getsockname()[1]
+        cfg = self.make_config(port, port, max_connections=10, proxy_protocol=m.ProxyProtocolConfig(False, True, 1, ()))
+        health = m.HealthState(1, 1); health.set_initial_state(True)
+        limiter = m.ConnectionLimiter(10)
+        state = m.RuntimeState(started_at=0.0)
+        proxy = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, state, cr, cw), "127.0.0.1", 0)
+        pport = proxy.sockets[0].getsockname()[1]
+        r, w = await asyncio.open_connection("127.0.0.1", pport)
+        w.write(b"HELLO"); await w.drain()
+        await asyncio.sleep(0.2)
+        self.assertIn(b"PROXY TCP4 ", bytes(got))
+        self.assertTrue(bytes(got).endswith(b"\r\nHELLO"))
+        await m.close_writer(w); await r.read(1)
+        proxy.close(); await proxy.wait_closed(); srv.close(); await srv.wait_closed()
+
+    async def test_proxy_protocol_accept_and_send_uses_client_ip_from_inbound_header(self):
+        got = bytearray()
+        async def backend(reader, writer):
+            got.extend(await reader.read(1024))
+            await m.close_writer(writer)
+        srv = await asyncio.start_server(backend, "127.0.0.1", 0)
+        port = srv.sockets[0].getsockname()[1]
+        cfg = self.make_config(port, port, max_connections=10, proxy_protocol=m.ProxyProtocolConfig(True, True, 1, ("127.0.0.1",)))
+        health = m.HealthState(1, 1); health.set_initial_state(True)
+        limiter = m.ConnectionLimiter(10)
+        proxy = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, m.RuntimeState(started_at=0.0), cr, cw), "127.0.0.1", 0)
+        pport = proxy.sockets[0].getsockname()[1]
+        r, w = await asyncio.open_connection("127.0.0.1", pport)
+        w.write(b"PROXY TCP4 203.0.113.10 127.0.0.1 54321 25565\r\nHELLO"); await w.drain()
+        await asyncio.sleep(0.2)
+        self.assertIn(b"PROXY TCP4 203.0.113.10 ", bytes(got))
+        self.assertTrue(bytes(got).endswith(b"\r\nHELLO"))
+        await m.close_writer(w); await r.read(1)
+        proxy.close(); await proxy.wait_closed(); srv.close(); await srv.wait_closed()
+
+    async def test_proxy_protocol_send_on_main_failure_to_fallback(self):
+        got = bytearray()
+        async def fb_backend(reader, writer):
+            got.extend(await reader.read(1024))
+            await m.close_writer(writer)
+        fb = await asyncio.start_server(fb_backend, "127.0.0.1", 0)
+        fb_port = fb.sockets[0].getsockname()[1]
+        cfg = self.make_config(9, fb_port, max_connections=10, connect_fallback_on_main_connect_failure=True, proxy_protocol=m.ProxyProtocolConfig(False, True, 1, ()))
+        health = m.HealthState(1, 1); health.set_initial_state(True)
+        limiter = m.ConnectionLimiter(10)
+        proxy = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, m.RuntimeState(started_at=0.0), cr, cw), "127.0.0.1", 0)
+        pport = proxy.sockets[0].getsockname()[1]
+        r, w = await asyncio.open_connection("127.0.0.1", pport)
+        w.write(b"HELLO"); await w.drain()
+        await asyncio.sleep(0.25)
+        self.assertIn(b"PROXY TCP4 ", bytes(got))
+        self.assertTrue(bytes(got).endswith(b"\r\nHELLO"))
+        await m.close_writer(w); await r.read(1)
+        proxy.close(); await proxy.wait_closed(); fb.close(); await fb.wait_closed()
+
+    async def test_proxy_protocol_untrusted_peer_releases_resources(self):
+        cfg = self.make_config(9, 10, max_connections=10, proxy_protocol=m.ProxyProtocolConfig(True, False, 1, ("10.0.0.0/8",)))
+        health = m.HealthState(1, 1); health.set_initial_state(True)
+        limiter = m.ConnectionLimiter(1)
+        state = m.RuntimeState(started_at=0.0)
+        proxy = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, state, cr, cw), "127.0.0.1", 0)
+        pport = proxy.sockets[0].getsockname()[1]
+        r, w = await asyncio.open_connection("127.0.0.1", pport)
+        await asyncio.sleep(0.2)
+        self.assertEqual(await r.read(1), b"")
+        await m.close_writer(w)
+        self.assertEqual(state.active_connections, 0)
+        self.assertTrue(await limiter.try_acquire())
+        await limiter.release()
+        proxy.close(); await proxy.wait_closed()
+
+    async def test_proxy_protocol_send_family_mismatch_falls_back_to_unknown(self):
+        got = bytearray()
+        async def backend(reader, writer):
+            got.extend(await reader.read(1024))
+            await m.close_writer(writer)
+        srv = await asyncio.start_server(backend, "127.0.0.1", 0)
+        port = srv.sockets[0].getsockname()[1]
+        cfg = self.make_config(port, port, max_connections=10, proxy_protocol=m.ProxyProtocolConfig(True, True, 1, ("127.0.0.1",)))
+        health = m.HealthState(1, 1); health.set_initial_state(True)
+        limiter = m.ConnectionLimiter(10)
+        proxy = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, m.RuntimeState(started_at=0.0), cr, cw), "127.0.0.1", 0)
+        pport = proxy.sockets[0].getsockname()[1]
+        with mock.patch("mc_failover_proxy.build_proxy_v1_header", side_effect=ValueError("family mismatch")):
+            r, w = await asyncio.open_connection("127.0.0.1", pport)
+            w.write(b"PROXY TCP4 203.0.113.10 127.0.0.1 54321 25565\r\nHELLO"); await w.drain()
+            await asyncio.sleep(0.25)
+            await m.close_writer(w); await r.read(1)
+        self.assertTrue(bytes(got).startswith(b"PROXY UNKNOWN\r\n"))
+        self.assertTrue(bytes(got).endswith(b"HELLO"))
+        proxy.close(); await proxy.wait_closed(); srv.close(); await srv.wait_closed()
+
 
 class MonitoringTests(unittest.IsolatedAsyncioTestCase):
     def _monitoring_config(self, force_fallback_file: str | None = None, force_main_file: str | None = None) -> m.AppConfig:
