@@ -95,6 +95,7 @@ interval_seconds = 3.0
 timeout_seconds = 2.0
 fail_after = 2
 recover_after = 2
+min_recovery_seconds = 0.0
 
 [connection]
 timeout_seconds = 5.0
@@ -122,6 +123,7 @@ level = "INFO"
 | `healthcheck.timeout_seconds` | Timeout pro Prüfvorgang (Sekunden) | `2.0` |
 | `healthcheck.fail_after` | Anzahl Fehlversuche bis Umschaltung auf FALLBACK | `2` |
 | `healthcheck.recover_after` | Anzahl Erfolge bis Rückschaltung auf MAIN | `2` |
+| `healthcheck.min_recovery_seconds` | Zusätzliche stabile Healthy-Zeit vor Rückschaltung (`0.0` = deaktiviert) | `30.0` |
 | `healthcheck.target_host` | Optionales Ziel für den Healthcheck-Host | `100.64.0.10` |
 | `healthcheck.target_port` | Optionales Ziel für den Healthcheck-Port | `25567` |
 | `healthcheck.protocol_version` | Protokollversion im Status-Handshake (Default) | `767` |
@@ -150,6 +152,30 @@ Wichtige Einordnung:
 - In `config.example.toml` sind beide bewusst als empfohlene Produktionswerte auf `true` gesetzt.
 - `idle_timeout_seconds = 0` deaktiviert den Idle-Disconnect vollständig.
 - `force_fallback_file` hat Vorrang vor `force_main_file`, wenn beide Dateien existieren.
+
+
+
+## Recovery-Wartezeit nach MAIN-Rückkehr
+
+Minecraft-Server (Paper/Spigot/Velocity mit Plugins, Modpacks, Datenbanken) können TCP/Status oft schon beantworten, obwohl intern noch geladen wird.
+
+- `recover_after`: wie viele erfolgreiche Checks am Stück nötig sind.
+- `min_recovery_seconds`: zusätzliche durchgehende Healthy-Zeit nach der ersten erfolgreichen Antwort.
+
+Für `FALLBACK -> MAIN` müssen beide Bedingungen erfüllt sein. Mit `min_recovery_seconds = 0.0` bleibt das alte Verhalten erhalten.
+
+Beispiel:
+
+```toml
+[healthcheck]
+interval_seconds = 3.0
+fail_after = 2
+recover_after = 3
+min_recovery_seconds = 30.0
+```
+
+Bedeutung: Ausfall wird nach ca. 6 Sekunden erkannt; Rückschaltung erst nach 3 Erfolgs-Checks **und** mindestens 30 Sekunden stabiler Erreichbarkeit.
+Bei großen Modpacks oder Paper-Servern mit vielen Plugins sind 20-60 Sekunden oft sinnvoll.
 
 ## Wartungsmodus / Force-Fallback
 
