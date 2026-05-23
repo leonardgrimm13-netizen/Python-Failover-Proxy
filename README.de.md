@@ -130,6 +130,9 @@ level = "INFO"
 | `connection.connect_fallback_on_main_connect_failure` | Bei MAIN-Connect-Fehler sofort FALLBACK versuchen | `true` |
 | `connection.tcp_keepalive` | Aktiviert SO_KEEPALIVE auf Proxy-Sockets | `true` |
 | `connection.max_connections` | Hartes Limit für gleichzeitige Verbindungen | `4096` |
+| `maintenance.mode` | Routing-Modus: `auto`, `force_fallback`, `force_main` | `auto` |
+| `maintenance.force_fallback_file` | Optionale Override-Datei (existiert => Fallback erzwingen, ohne Neustart) | `/var/lib/mc-failover/force_fallback` |
+| `maintenance.force_main_file` | Optionale Override-Datei (existiert => MAIN erzwingen, ohne Neustart) | `/var/lib/mc-failover/force_main` |
 | `logging.level` | Logging-Level (`DEBUG`, `INFO`, ...) | `INFO` |
 
 Wichtige Einordnung:
@@ -141,6 +144,31 @@ Wichtige Einordnung:
 - Code-Defaults sind bewusst konservativ/rückwärtskompatibel: `connect_fallback_on_main_connect_failure = false`, `tcp_keepalive = false`.
 - In `config.example.toml` sind beide bewusst als empfohlene Produktionswerte auf `true` gesetzt.
 - `idle_timeout_seconds = 0` deaktiviert den Idle-Disconnect vollständig.
+
+
+## Wartungsmodus / Force-Fallback
+
+Mit `[maintenance]` kannst du neue Spieler bewusst steuern, unabhängig vom Healthcheck-Zustand von MAIN.
+
+- `mode = "auto"`: normales Verhalten (Healthcheck entscheidet).
+- `mode = "force_fallback"`: neue Spieler immer in den Warteraum/Fallback schicken (ideal für Wartung).
+- `mode = "force_main"`: neue Spieler immer auf MAIN schicken, auch wenn der Healthcheck MAIN als down meldet.
+
+> Warnung: `force_main` kann Spieler auf einen instabilen/down MAIN leiten. Nur bewusst einsetzen.
+
+Datei-Overrides (nur bei `mode = "auto"` aktiv):
+- `force_fallback_file`: existiert die Datei, wird Fallback erzwungen.
+- `force_main_file`: existiert die Datei, wird MAIN erzwungen.
+- `force_fallback_file` hat Vorrang, wenn beide Dateien existieren.
+- Änderungen an den Dateien wirken sofort ohne Neustart.
+
+Admin-Beispiel:
+
+```bash
+sudo mkdir -p /var/lib/mc-failover
+sudo touch /var/lib/mc-failover/force_fallback
+sudo rm /var/lib/mc-failover/force_fallback
+```
 
 ## Velocity / Backend-Healthcheck
 

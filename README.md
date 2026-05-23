@@ -130,6 +130,9 @@ level = "INFO"
 | `connection.connect_fallback_on_main_connect_failure` | If MAIN connect fails, try FALLBACK immediately | `true` |
 | `connection.tcp_keepalive` | Enable SO_KEEPALIVE on proxied sockets | `true` |
 | `connection.max_connections` | Hard limit for concurrent client sessions | `4096` |
+| `maintenance.mode` | Routing mode: `auto`, `force_fallback`, `force_main` | `auto` |
+| `maintenance.force_fallback_file` | Optional override file (exists => force fallback, no restart) | `/var/lib/mc-failover/force_fallback` |
+| `maintenance.force_main_file` | Optional override file (exists => force main, no restart) | `/var/lib/mc-failover/force_main` |
 | `logging.level` | Logging level (`DEBUG`, `INFO`, ...) | `INFO` |
 
 Guidance:
@@ -141,6 +144,31 @@ Guidance:
 - Default behavior in code is conservative and backward-safe: `connect_fallback_on_main_connect_failure = false`, `tcp_keepalive = false`.
 - The `config.example.toml` intentionally enables both (`true`) as recommended production defaults for new installs.
 - `idle_timeout_seconds = 0` disables idle disconnects completely.
+
+
+## Maintenance mode / force fallback
+
+Use `[maintenance]` to force where **new incoming players** are routed, independent from MAIN health.
+
+- `mode = "auto"`: normal behavior (healthcheck decides).
+- `mode = "force_fallback"`: always route new players to FALLBACK (ideal for maintenance windows).
+- `mode = "force_main"`: always route new players to MAIN, even when healthcheck is unhealthy.
+
+> Warning: `force_main` can send players to MAIN even if health checks report failures. Use intentionally.
+
+File overrides (only active when `mode = "auto"`):
+- `force_fallback_file`: if file exists => force fallback.
+- `force_main_file`: if file exists => force main.
+- `force_fallback_file` has priority if both files exist.
+- File changes are applied dynamically without restart.
+
+Example admin workflow:
+
+```bash
+sudo mkdir -p /var/lib/mc-failover
+sudo touch /var/lib/mc-failover/force_fallback
+sudo rm /var/lib/mc-failover/force_fallback
+```
 
 ## Velocity / Backend healthcheck
 

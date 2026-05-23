@@ -85,6 +85,13 @@ class LoggingConfig:
 
 
 @dataclass(frozen=True)
+class MaintenanceConfig:
+    mode: str
+    force_fallback_file: Optional[str]
+    force_main_file: Optional[str]
+
+
+@dataclass(frozen=True)
 class AppConfig:
     proxy: ProxyConfig
     main: TargetConfig
@@ -92,6 +99,7 @@ class AppConfig:
     healthcheck: HealthCheckConfig
     connection: ConnectionConfig
     logging: LoggingConfig
+    maintenance: MaintenanceConfig
 
 
 @dataclass(frozen=True)
@@ -99,6 +107,13 @@ class Target:
     name: str
     host: str
     port: int
+
+
+@dataclass(frozen=True)
+class TargetDecision:
+    target: Target
+    reason: str
+    maintenance_mode: str
 
 
 class HealthState:
@@ -159,7 +174,7 @@ def _read_optional(section_data: dict[str, Any], key: str, default: Any = None) 
 def _clean_optional_string(value: Any) -> Any:
     if isinstance(value, str):
         cleaned = value.strip()
-        return cleaned if cleaned else value
+        return cleaned if cleaned else None
     return value
 
 
@@ -190,6 +205,9 @@ def load_config(path: Path) -> AppConfig:
     healthcheck = _read_section(raw, "healthcheck")
     connection = _read_section(raw, "connection")
     logging_cfg = _read_section(raw, "logging")
+    maintenance_cfg = raw.get("maintenance", {})
+    if not isinstance(maintenance_cfg, dict):
+        raise ConfigError("Sektion [maintenance] muss ein TOML-Table sein.")
 
     config = AppConfig(
         proxy=ProxyConfig(
@@ -227,6 +245,11 @@ def load_config(path: Path) -> AppConfig:
             max_connections=_read_optional(connection, "max_connections", 4096),
         ),
         logging=LoggingConfig(level=_clean_required_string(_read_required(logging_cfg, "logging", "level"))),
+        maintenance=MaintenanceConfig(
+            mode=_clean_required_string(_read_optional(maintenance_cfg, "mode", "auto")),
+            force_fallback_file=_clean_optional_string(_read_optional(maintenance_cfg, "force_fallback_file")),
+            force_main_file=_clean_optional_string(_read_optional(maintenance_cfg, "force_main_file")),
+        ),
     )
     validate_config(config)
     return config
@@ -291,6 +314,15 @@ def validate_config(config: AppConfig) -> None:
 
     if not isinstance(config.logging.level, str) or config.logging.level.upper() not in VALID_LOG_LEVELS:
         raise ConfigError("logging.level muss DEBUG, INFO, WARNING, ERROR oder CRITICAL sein.")
+    if not isinstance(config.maintenance.mode, str) or config.maintenance.mode not in {"auto", "force_fallback", "force_main"}:
+        raise ConfigError("maintenance.mode muss 'auto', 'force_fallback' oder 'force_main' sein.")
+
+    for key, value in (
+        ("maintenance.force_fallback_file", config.maintenance.force_fallback_file),
+        ("maintenance.force_main_file", config.maintenance.force_main_file),
+    ):
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise ConfigError(f"{key} muss ein nicht-leerer String sein, falls gesetzt.")
 
     if config.healthcheck.target_host is not None:
         if not isinstance(config.healthcheck.target_host, str) or not config.healthcheck.target_host.strip():
@@ -533,9 +565,32 @@ async def check_main_server(config: AppConfig) -> HealthCheckResult:
 
 
 def choose_target(config: AppConfig, health: HealthState) -> Target:
+    return choose_target_decision(config, health).target
+
+
+def get_effective_maintenance_mode(config: AppConfig) -> tuple[str, str]:
+    mode = config.maintenance.mode
+    if mode in {"force_fallback", "force_main"}:
+        return mode, "config"
+    fallback_file = config.maintenance.force_fallback_file
+    main_file = config.maintenance.force_main_file
+    if fallback_file and Path(fallback_file).exists():
+        return "force_fallback", "force_fallback_file"
+    if main_file and Path(main_file).exists():
+        return "force_main", "force_main_file"
+    return "auto", "auto"
+
+
+def choose_target_decision(config: AppConfig, health: HealthState) -> TargetDecision:
+    mode, reason = get_effective_maintenance_mode(config)
+    if mode == "force_fallback":
+        return TargetDecision(Target("FALLBACK", config.fallback.host, config.fallback.port), f"{reason}" if reason != "config" else "force_fallback_config", mode)
+    if mode == "force_main":
+        return TargetDecision(Target("MAIN", config.main.host, config.main.port), f"{reason}" if reason != "config" else "force_main_config", mode)
     current = config.main if health.main_healthy else config.fallback
     name = "MAIN" if health.main_healthy else "FALLBACK"
-    return Target(name=name, host=current.host, port=current.port)
+    health_reason = "health_main" if health.main_healthy else "health_fallback"
+    return TargetDecision(Target(name=name, host=current.host, port=current.port), health_reason, mode)
 
 
 async def pipe(source: asyncio.StreamReader, destination: asyncio.StreamWriter, direction_name: str, buffer_size: int, idle_timeout_seconds: float) -> None:
@@ -585,8 +640,9 @@ async def handle_client(config: AppConfig, health: HealthState, limiter: Connect
         await close_writer(client_writer)
         return
 
-    target = choose_target(config, health)
-    log.info("Neue Verbindung von %s -> %s %s:%s", peer, target.name, target.host, target.port)
+    decision = choose_target_decision(config, health)
+    target = decision.target
+    log.info("Neue Verbindung von %s -> %s %s:%s reason=%s", peer, target.name, target.host, target.port, decision.reason)
     server_writer = None
     try:
         try:
