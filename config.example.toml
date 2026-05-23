@@ -79,5 +79,12 @@ force_fallback_file = ""
 # force_fallback_file has priority when both files exist.
 force_main_file = ""
 
+[monitoring]
+# Optional local HTTP monitoring endpoint (disabled by default).
+enabled = false
+listen_host = "127.0.0.1"
+listen_port = 8080
+allow_remote = false
+
 [logging]
 level = "INFO"
