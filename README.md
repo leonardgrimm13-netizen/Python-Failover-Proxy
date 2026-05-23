@@ -126,7 +126,7 @@ level = "INFO"
 | `healthcheck.jitter_seconds` | Random delay added per check to reduce synchronized bursts | `0.2` |
 | `connection.timeout_seconds` | Upstream connection timeout | `5.0` |
 | `connection.buffer_size` | TCP forwarding buffer size | `65536` |
-| `connection.idle_timeout_seconds` | Idle timeout for established proxied connections | `300.0` |
+| `connection.idle_timeout_seconds` | Idle timeout for established proxied connections (`0` = disabled) | `300.0` |
 | `connection.connect_fallback_on_main_connect_failure` | If MAIN connect fails, try FALLBACK immediately | `true` |
 | `connection.tcp_keepalive` | Enable SO_KEEPALIVE on proxied sockets | `true` |
 | `connection.max_connections` | Hard limit for concurrent client sessions | `4096` |
@@ -138,6 +138,9 @@ Guidance:
 - `minecraft_status` can be more protocol-aware, but may be more sensitive depending on server version/proxies/network middleboxes.
 - `fail_after` avoids immediate failover from a single transient failure.
 - `recover_after` avoids flapping and early switchback to MAIN.
+- Default behavior in code is conservative and backward-safe: `connect_fallback_on_main_connect_failure = false`, `tcp_keepalive = false`.
+- The `config.example.toml` intentionally enables both (`true`) as recommended production defaults for new installs.
+- `idle_timeout_seconds = 0` disables idle disconnects completely.
 
 ## Velocity / Backend healthcheck
 

@@ -181,7 +181,7 @@ class ConfigTests(unittest.TestCase):
     def test_validation_new_connection_fields(self):
         invalid_lines = [
             "buffer_size = 1",
-            "idle_timeout_seconds = 0",
+            "idle_timeout_seconds = -1",
             "max_connections = 0",
             'connect_fallback_on_main_connect_failure = "yes"',
             'tcp_keepalive = "yes"',
@@ -335,6 +335,103 @@ class StatusProtocolTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse((await m.minecraft_status_health_check("127.0.0.1", 9, 0.01, 767, None, True)).ok)
 
+
+class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    def make_config(self, main_port: int, fallback_port: int, **overrides) -> m.AppConfig:
+        return m.AppConfig(
+            proxy=m.ProxyConfig("127.0.0.1", 25565),
+            main=m.TargetConfig("127.0.0.1", main_port),
+            fallback=m.TargetConfig("127.0.0.1", fallback_port),
+            healthcheck=m.HealthCheckConfig("tcp", 3.0, 1.0, 1, 1, None, None, 767, None, True, False, 0.0),
+            connection=m.ConnectionConfig(
+                overrides.get("timeout_seconds", 0.5),
+                4096,
+                overrides.get("idle_timeout_seconds", 0.5),
+                overrides.get("connect_fallback_on_main_connect_failure", True),
+                False,
+                overrides.get("max_connections", 1),
+            ),
+            logging=m.LoggingConfig("INFO"),
+        )
+
+    async def test_connection_limiter_accepts_then_rejects(self):
+        limiter = m.ConnectionLimiter(1)
+        self.assertTrue(await limiter.try_acquire())
+        self.assertFalse(await limiter.try_acquire())
+        await limiter.release()
+        self.assertTrue(await limiter.try_acquire())
+
+    async def test_release_runs_on_connect_failure(self):
+        cfg = self.make_config(9, 10, connect_fallback_on_main_connect_failure=False)
+        health = m.HealthState(1, 1)
+        health.set_initial_state(True)
+        limiter = m.ConnectionLimiter(1)
+        async def on_connect(reader, writer):
+            await m.handle_client(cfg, health, limiter, reader, writer)
+        listener = await asyncio.start_server(on_connect, "127.0.0.1", 0)
+        port = listener.sockets[0].getsockname()[1]
+        r, w = await asyncio.open_connection("127.0.0.1", port)
+        await asyncio.sleep(0.2)
+        await m.close_writer(w)
+        listener.close()
+        await listener.wait_closed()
+        self.assertTrue(await limiter.try_acquire())
+        await limiter.release()
+
+    async def test_idle_timeout_closes_inactive_connections(self):
+        done = asyncio.Event()
+        async def backend(reader, writer):
+            await asyncio.sleep(5)
+            await m.close_writer(writer)
+        server = await asyncio.start_server(backend, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        cfg = self.make_config(port, port, idle_timeout_seconds=0.1)
+        health = m.HealthState(1, 1); health.set_initial_state(True)
+        limiter = m.ConnectionLimiter(10)
+        client_server = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, cr, cw), "127.0.0.1", 0)
+        pport = client_server.sockets[0].getsockname()[1]
+        reader, writer = await asyncio.open_connection("127.0.0.1", pport)
+        await asyncio.sleep(0.3)
+        data = await reader.read(1)
+        self.assertEqual(data, b"")
+        await m.close_writer(writer)
+        client_server.close(); await client_server.wait_closed()
+        server.close(); await server.wait_closed()
+        done.set()
+
+    async def test_main_fail_fallback_success_and_forward(self):
+        got = asyncio.Event()
+        async def fb_handler(reader, writer):
+            data = await reader.read(1024)
+            writer.write(data[::-1]); await writer.drain()
+            got.set()
+            await m.close_writer(writer)
+        fb = await asyncio.start_server(fb_handler, "127.0.0.1", 0)
+        fb_port = fb.sockets[0].getsockname()[1]
+        cfg = self.make_config(9, fb_port, connect_fallback_on_main_connect_failure=True, max_connections=10)
+        health = m.HealthState(1, 1); health.set_initial_state(True)
+        limiter = m.ConnectionLimiter(10)
+        proxy = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, cr, cw), "127.0.0.1", 0)
+        pport = proxy.sockets[0].getsockname()[1]
+        r, w = await asyncio.open_connection("127.0.0.1", pport)
+        w.write(b"abc"); await w.drain()
+        self.assertEqual(await r.read(3), b"cba")
+        await got.wait()
+        await m.close_writer(w)
+        proxy.close(); await proxy.wait_closed()
+        fb.close(); await fb.wait_closed()
+
+    async def test_main_and_fallback_both_unreachable_client_closed(self):
+        cfg = self.make_config(9, 10, connect_fallback_on_main_connect_failure=True, max_connections=10)
+        health = m.HealthState(1, 1); health.set_initial_state(True)
+        limiter = m.ConnectionLimiter(10)
+        proxy = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, cr, cw), "127.0.0.1", 0)
+        pport = proxy.sockets[0].getsockname()[1]
+        r, w = await asyncio.open_connection("127.0.0.1", pport)
+        await asyncio.sleep(0.2)
+        self.assertEqual(await r.read(1), b"")
+        await m.close_writer(w)
+        proxy.close(); await proxy.wait_closed()
 
 if __name__ == "__main__":
     unittest.main()

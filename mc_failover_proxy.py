@@ -280,7 +280,10 @@ def validate_config(config: AppConfig) -> None:
         ("connection.timeout_seconds", config.connection.timeout_seconds),
         ("connection.idle_timeout_seconds", config.connection.idle_timeout_seconds),
     ):
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        min_allowed = 0 if key == "connection.idle_timeout_seconds" else 0
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < min_allowed or (
+            key != "connection.idle_timeout_seconds" and value <= 0
+        ):
             raise ConfigError(f"{key} muss int oder float und > 0 sein (aktuell: {value!r}).")
 
     if isinstance(config.healthcheck.jitter_seconds, bool) or not isinstance(config.healthcheck.jitter_seconds, (int, float)) or config.healthcheck.jitter_seconds < 0:
@@ -538,7 +541,10 @@ def choose_target(config: AppConfig, health: HealthState) -> Target:
 async def pipe(source: asyncio.StreamReader, destination: asyncio.StreamWriter, direction_name: str, buffer_size: int, idle_timeout_seconds: float) -> None:
     try:
         while True:
-            data = await asyncio.wait_for(source.read(buffer_size), timeout=idle_timeout_seconds)
+            if idle_timeout_seconds > 0:
+                data = await asyncio.wait_for(source.read(buffer_size), timeout=idle_timeout_seconds)
+            else:
+                data = await source.read(buffer_size)
             if not data:
                 break
             destination.write(data)
@@ -587,12 +593,32 @@ async def handle_client(config: AppConfig, health: HealthState, limiter: Connect
             server_reader, server_writer = await asyncio.wait_for(
                 asyncio.open_connection(target.host, target.port), timeout=config.connection.timeout_seconds
             )
-        except Exception:
+        except Exception as main_exc:
             if target.name == "MAIN" and config.connection.connect_fallback_on_main_connect_failure:
                 fb = Target("FALLBACK", config.fallback.host, config.fallback.port)
-                log.warning("MAIN connect fehlgeschlagen, versuche FALLBACK sofort für %s", peer)
-                server_reader, server_writer = await asyncio.wait_for(asyncio.open_connection(fb.host, fb.port), timeout=config.connection.timeout_seconds)
-                target = fb
+                log.warning(
+                    "MAIN connect fehlgeschlagen (%s:%s, %s), versuche FALLBACK sofort für %s -> %s:%s",
+                    target.host,
+                    target.port,
+                    main_exc.__class__.__name__,
+                    peer,
+                    fb.host,
+                    fb.port,
+                )
+                try:
+                    server_reader, server_writer = await asyncio.wait_for(
+                        asyncio.open_connection(fb.host, fb.port), timeout=config.connection.timeout_seconds
+                    )
+                    target = fb
+                except Exception as fallback_exc:
+                    log.error(
+                        "MAIN connect fehlgeschlagen und FALLBACK connect ebenfalls fehlgeschlagen für %s (%s:%s, %s)",
+                        peer,
+                        fb.host,
+                        fb.port,
+                        fallback_exc.__class__.__name__,
+                    )
+                    raise
             else:
                 raise
         set_tcp_nodelay(client_writer)
