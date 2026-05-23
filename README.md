@@ -492,3 +492,39 @@ You should now see `active_target="FALLBACK"` and `routing_reason="force_fallbac
 ---
 
 [Deutsch](README.de.md)
+
+## PROXY Protocol
+
+This proxy supports **PROXY protocol v1 only** (not v2). It can optionally accept a PROXY header from a trusted downstream proxy and/or send a PROXY header to upstream servers.
+
+⚠️ Security warning: Never enable `accept=true` for untrusted Internet clients. Restrict access and set `trusted_proxy_ips`.
+
+Example 1 (accept only):
+```toml
+[proxy_protocol]
+accept = true
+send = false
+version = 1
+trusted_proxy_ips = ["100.64.0.1", "127.0.0.1"]
+```
+
+Example 2 (accept + forward to Velocity):
+```toml
+[proxy_protocol]
+accept = true
+send = true
+version = 1
+trusted_proxy_ips = ["100.64.0.1"]
+```
+
+Check the Velocity documentation for the correct PROXY-protocol setting.
+
+HAProxy backend (v1):
+```haproxy
+backend mc_failover
+    mode tcp
+    server failover 100.64.0.20:25565 send-proxy
+```
+
+Do not use `send-proxy-v2` here; v2 is not supported by this project.
+

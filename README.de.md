@@ -493,6 +493,42 @@ Danach sollte in der Antwort `active_target="FALLBACK"` und `routing_reason="for
 
 Wenn du auf einem VPS arbeitest, lasse `listen_host` am besten auf `127.0.0.1` und greife per SSH-Tunnel oder Tailscale darauf zu.
 
+
+## PROXY-Protokoll
+
+Dieser Proxy unterstützt **nur PROXY protocol v1** (kein v2). Optional kann er PROXY-Header von einem vertrauenswürdigen Downstream-Proxy annehmen und/oder an Upstream-Server weitergeben.
+
+⚠️ Sicherheitswarnung: `accept=true` niemals für untrusted Internet-Clients aktivieren. Zugriff einschränken und `trusted_proxy_ips` setzen.
+
+Beispiel 1 (nur akzeptieren):
+```toml
+[proxy_protocol]
+accept = true
+send = false
+version = 1
+trusted_proxy_ips = ["100.64.0.1", "127.0.0.1"]
+```
+
+Beispiel 2 (akzeptieren + an Velocity weitergeben):
+```toml
+[proxy_protocol]
+accept = true
+send = true
+version = 1
+trusted_proxy_ips = ["100.64.0.1"]
+```
+
+Prüfe die Velocity-Dokumentation für die passende PROXY-protocol Einstellung.
+
+HAProxy-Backend (v1):
+```haproxy
+backend mc_failover
+    mode tcp
+    server failover 100.64.0.20:25565 send-proxy
+```
+
+`send-proxy-v2` ist PROXY protocol v2 und wird hier nicht unterstützt.
+
 ---
 
 [English](README.md)
