@@ -59,5 +59,21 @@ connect_fallback_on_main_connect_failure = true
 tcp_keepalive = true
 max_connections = 4096
 
+[maintenance]
+# "auto" = healthcheck decides routing.
+# "force_fallback" = always route new players to fallback/waiting room.
+# "force_main" = always route new players to main (even if healthcheck is unhealthy).
+mode = "auto"
+
+# Optional file-based override (checked dynamically, no restart needed):
+# if this file exists, force_fallback is active.
+# Ideal for maintenance windows.
+force_fallback_file = ""
+
+# Optional file-based override (checked dynamically, no restart needed):
+# if this file exists, force_main is active.
+# force_fallback_file has priority when both files exist.
+force_main_file = ""
+
 [logging]
 level = "INFO"

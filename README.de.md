@@ -100,6 +100,11 @@ recover_after = 2
 timeout_seconds = 5.0
 buffer_size = 65536
 
+[maintenance]
+mode = "auto"
+force_fallback_file = "/var/lib/mc-failover/force_fallback"
+force_main_file = "/var/lib/mc-failover/force_main"
+
 [logging]
 level = "INFO"
 ```
@@ -130,6 +135,9 @@ level = "INFO"
 | `connection.connect_fallback_on_main_connect_failure` | Bei MAIN-Connect-Fehler sofort FALLBACK versuchen | `true` |
 | `connection.tcp_keepalive` | Aktiviert SO_KEEPALIVE auf Proxy-Sockets | `true` |
 | `connection.max_connections` | Hartes Limit für gleichzeitige Verbindungen | `4096` |
+| `maintenance.mode` | Routing-Modus: `auto`, `force_fallback`, `force_main` | `auto` |
+| `maintenance.force_fallback_file` | Existiert Datei, werden neue Spieler auf FALLBACK geleitet (ohne Neustart) | `/var/lib/mc-failover/force_fallback` |
+| `maintenance.force_main_file` | Existiert Datei, werden neue Spieler auf MAIN geleitet (ohne Neustart) | `/var/lib/mc-failover/force_main` |
 | `logging.level` | Logging-Level (`DEBUG`, `INFO`, ...) | `INFO` |
 
 Wichtige Einordnung:
@@ -141,6 +149,25 @@ Wichtige Einordnung:
 - Code-Defaults sind bewusst konservativ/rückwärtskompatibel: `connect_fallback_on_main_connect_failure = false`, `tcp_keepalive = false`.
 - In `config.example.toml` sind beide bewusst als empfohlene Produktionswerte auf `true` gesetzt.
 - `idle_timeout_seconds = 0` deaktiviert den Idle-Disconnect vollständig.
+- `force_fallback_file` hat Vorrang vor `force_main_file`, wenn beide Dateien existieren.
+
+## Wartungsmodus / Force-Fallback
+
+- `maintenance.mode = "auto"`: normales Verhalten, Healthcheck entscheidet.
+- `maintenance.mode = "force_fallback"`: neue Spieler landen immer im FALLBACK/Warteraum.
+- `maintenance.mode = "force_main"`: neue Spieler landen immer auf MAIN.
+- Statischer Modus (`force_fallback`/`force_main`) hat Vorrang vor Datei-Overrides.
+- In `auto` werden Datei-Overrides bei jeder neuen Verbindung neu geprüft (wirkt ohne Neustart).
+
+Typische Admin-Befehle:
+
+```bash
+sudo mkdir -p /var/lib/mc-failover
+sudo touch /var/lib/mc-failover/force_fallback
+sudo rm /var/lib/mc-failover/force_fallback
+```
+
+Warnung: `force_main` kann Spieler auf MAIN leiten, obwohl der Healthcheck MAIN als unhealthy bewertet. Nur bewusst einsetzen.
 
 ## Velocity / Backend-Healthcheck
 
