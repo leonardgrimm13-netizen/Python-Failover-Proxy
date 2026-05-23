@@ -150,6 +150,21 @@ def _read_optional(section_data: dict[str, Any], key: str, default: Any = None) 
     return section_data.get(key, default)
 
 
+
+
+def _clean_optional_string(value: Any) -> Any:
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return cleaned if cleaned else value
+    return value
+
+
+def _clean_required_string(value: Any) -> Any:
+    if isinstance(value, str):
+        return value.strip()
+    return value
+
+
 def load_config(path: Path) -> AppConfig:
     if not path.exists():
         raise ConfigError(f"Konfigurationsdatei nicht gefunden: {path}")
@@ -174,15 +189,15 @@ def load_config(path: Path) -> AppConfig:
 
     config = AppConfig(
         proxy=ProxyConfig(
-            listen_host=_read_required(proxy, "proxy", "listen_host"),
+            listen_host=_clean_required_string(_read_required(proxy, "proxy", "listen_host")),
             listen_port=_read_required(proxy, "proxy", "listen_port"),
         ),
         main=TargetConfig(
-            host=_read_required(main, "main", "host"),
+            host=_clean_required_string(_read_required(main, "main", "host")),
             port=_read_required(main, "main", "port"),
         ),
         fallback=TargetConfig(
-            host=_read_required(fallback, "fallback", "host"),
+            host=_clean_required_string(_read_required(fallback, "fallback", "host")),
             port=_read_required(fallback, "fallback", "port"),
         ),
         healthcheck=HealthCheckConfig(
@@ -191,10 +206,10 @@ def load_config(path: Path) -> AppConfig:
             timeout_seconds=_read_required(healthcheck, "healthcheck", "timeout_seconds"),
             fail_after=_read_required(healthcheck, "healthcheck", "fail_after"),
             recover_after=_read_required(healthcheck, "healthcheck", "recover_after"),
-            target_host=_read_optional(healthcheck, "target_host"),
+            target_host=_clean_optional_string(_read_optional(healthcheck, "target_host")),
             target_port=_read_optional(healthcheck, "target_port"),
             protocol_version=_read_optional(healthcheck, "protocol_version", 767),
-            status_hostname=_read_optional(healthcheck, "status_hostname"),
+            status_hostname=_clean_optional_string(_read_optional(healthcheck, "status_hostname")),
             require_valid_json=_read_optional(healthcheck, "require_valid_json", True),
             log_status_details=_read_optional(healthcheck, "log_status_details", False),
         ),
@@ -202,7 +217,7 @@ def load_config(path: Path) -> AppConfig:
             timeout_seconds=_read_required(connection, "connection", "timeout_seconds"),
             buffer_size=_read_required(connection, "connection", "buffer_size"),
         ),
-        logging=LoggingConfig(level=_read_required(logging_cfg, "logging", "level")),
+        logging=LoggingConfig(level=_clean_required_string(_read_required(logging_cfg, "logging", "level"))),
     )
     validate_config(config)
     return config

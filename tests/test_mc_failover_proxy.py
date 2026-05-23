@@ -72,8 +72,37 @@ class ConfigTests(unittest.TestCase):
 
     def test_config_example_toml_is_valid(self):
         cfg = m.load_config(REPO_ROOT / "config.example.toml")
+        self.assertEqual(cfg.proxy.listen_port, 25565)
         self.assertEqual(cfg.main.port, 25564)
+        self.assertEqual(cfg.fallback.port, 25566)
+        self.assertEqual(cfg.healthcheck.mode, "tcp")
+        self.assertIsNone(cfg.healthcheck.target_host)
+        self.assertIsNone(cfg.healthcheck.target_port)
 
+
+    def test_required_host_strings_are_stripped(self):
+        text = VALID_CONFIG_TOML.replace('listen_host = "0.0.0.0"', 'listen_host = " 0.0.0.0 "').replace(
+            'host = "127.0.0.1"\nport = 25564', 'host = " 127.0.0.1 "\nport = 25564'
+        ).replace('host = "127.0.0.1"\nport = 25566', 'host = " 127.0.0.1 "\nport = 25566')
+        cfg = m.load_config(self.write_temp_config(text))
+        self.assertEqual(cfg.proxy.listen_host, "0.0.0.0")
+        self.assertEqual(cfg.main.host, "127.0.0.1")
+        self.assertEqual(cfg.fallback.host, "127.0.0.1")
+
+    def test_optional_healthcheck_strings_are_stripped(self):
+        text = VALID_CONFIG_TOML.replace(
+            "recover_after = 2",
+            'recover_after = 2\ntarget_host = " 100.64.0.10 "\nstatus_hostname = " survival.example.com "',
+        )
+        cfg = m.load_config(self.write_temp_config(text))
+        self.assertEqual(cfg.healthcheck.target_host, "100.64.0.10")
+        self.assertEqual(cfg.healthcheck.status_hostname, "survival.example.com")
+
+    def test_readme_main_port_table_matches_example(self):
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        readme_de = (REPO_ROOT / "README.de.md").read_text(encoding="utf-8")
+        self.assertIn("| `main.port` | MAIN server TCP port | `25564` |", readme)
+        self.assertIn("| `main.port` | TCP-Port des Hauptservers | `25564` |", readme_de)
     def test_load_config_missing_file(self):
         with self.assertRaises(m.ConfigError):
             m.load_config(REPO_ROOT / "nope.toml")
