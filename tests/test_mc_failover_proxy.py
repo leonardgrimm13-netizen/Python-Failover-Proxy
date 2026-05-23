@@ -594,6 +594,12 @@ class StatusProtocolTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse((await m.minecraft_status_health_check("127.0.0.1", 9, 0.01, 767, None, True)).ok)
 
+    async def test_tcp_health_check_timeout_returns_result(self):
+        with mock.patch("asyncio.open_connection", new=mock.AsyncMock(side_effect=asyncio.TimeoutError())):
+            result = await m.tcp_health_check("127.0.0.1", 25564, 0.01)
+        self.assertFalse(result.ok)
+        self.assertIn("TimeoutError", result.reason)
+
 
 class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
     def make_config(self, main_port: int, fallback_port: int, **overrides) -> m.AppConfig:
@@ -727,9 +733,18 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MonitoringTests(unittest.IsolatedAsyncioTestCase):
-    async def test_monitoring_endpoints(self):
+    def _monitoring_config(self, force_fallback_file: str | None = None, force_main_file: str | None = None) -> m.AppConfig:
         cfg = m.load_config(REPO_ROOT / "config.example.toml")
-        cfg = m.AppConfig(**{**cfg.__dict__, "monitoring": m.MonitoringConfig(True, "127.0.0.1", 0, False)})
+        return m.AppConfig(
+            **{
+                **cfg.__dict__,
+                "monitoring": m.MonitoringConfig(True, "127.0.0.1", 0, False),
+                "maintenance": m.MaintenanceConfig("auto", force_fallback_file, force_main_file),
+            }
+        )
+
+    async def test_monitoring_endpoints(self):
+        cfg = self._monitoring_config()
         health = m.HealthState(1, 1); health.set_initial_state(True)
         state = m.RuntimeState(started_at=1.0, active_connections=2, total_connections=5, rejected_connections=1, active_target="FALLBACK", routing_reason="health_fallback")
         state.last_health_result = m.HealthCheckResult(ok=True, reason="status_json_ok", latency_ms=12.3)
@@ -747,12 +762,16 @@ class MonitoringTests(unittest.IsolatedAsyncioTestCase):
             health_resp = await req(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n")
             self.assertIn(b"200 OK", health_resp)
             self.assertIn(b'"service": "mc-failover"', health_resp)
+            self.assertIn(b'"routing_reason"', health_resp)
             state_resp = await req(b"GET /state HTTP/1.1\r\nHost: localhost\r\n\r\n")
             self.assertIn(b"active_connections", state_resp)
+            self.assertIn(b'"maintenance_mode"', state_resp)
             metrics_resp = await req(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n")
             self.assertIn(b"mc_failover_total_connections", metrics_resp)
+            self.assertIn(b"mc_failover_routing_reason_info", metrics_resp)
             ready_resp = await req(b"GET /ready HTTP/1.1\r\nHost: localhost\r\n\r\n")
-            self.assertIn(b'"active_target": "FALLBACK"', ready_resp)
+            self.assertIn(b'"active_target": "MAIN"', ready_resp)
+            self.assertIn(b'"routing_reason"', ready_resp)
             self.assertIn(b'"main_healthy": true', ready_resp)
             not_found = await req(b"GET /nope HTTP/1.1\r\nHost: localhost\r\n\r\n")
             self.assertIn(b"404 Not Found", not_found)
@@ -761,6 +780,63 @@ class MonitoringTests(unittest.IsolatedAsyncioTestCase):
             too_many_headers = b"GET /health HTTP/1.1\r\n" + b"X-A: b\r\n" * 70 + b"\r\n"
             bad = await req(too_many_headers)
             self.assertIn(b"400 Bad Request", bad)
+        finally:
+            server.close(); await server.wait_closed()
+
+    async def test_monitoring_refreshes_immediately_for_maintenance_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            force_fallback = Path(td) / "force_fallback"
+            force_main = Path(td) / "force_main"
+            cfg = self._monitoring_config(str(force_fallback), str(force_main))
+            health = m.HealthState(1, 1); health.set_initial_state(True)
+            state = m.RuntimeState(started_at=1.0)
+            server = await m.start_monitoring_server(cfg, health, state, asyncio.Event())
+            port = server.sockets[0].getsockname()[1]
+            try:
+                async def req(path: str) -> str:
+                    r, w = await asyncio.open_connection("127.0.0.1", port)
+                    w.write(f"GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n".encode())
+                    await w.drain()
+                    data = await r.read(65535)
+                    await m.close_writer(w)
+                    return data.decode("utf-8", "replace")
+
+                self.assertIn('"active_target": "MAIN"', await req("/state"))
+                self.assertIn('"routing_reason": "health_main"', await req("/state"))
+
+                force_fallback.touch()
+                self.assertIn('"active_target": "FALLBACK"', await req("/state"))
+                self.assertIn('"routing_reason": "force_fallback_file"', await req("/state"))
+                self.assertIn('"active_target": "FALLBACK"', await req("/health"))
+                self.assertIn('"routing_reason": "force_fallback_file"', await req("/ready"))
+                self.assertIn('mc_failover_active_target{target="MAIN"} 0', await req("/metrics"))
+                self.assertIn('mc_failover_active_target{target="FALLBACK"} 1', await req("/metrics"))
+
+                health.main_healthy = False
+                force_fallback.unlink()
+                force_main.touch()
+                self.assertIn('"active_target": "MAIN"', await req("/state"))
+                self.assertIn('"routing_reason": "force_main_file"', await req("/state"))
+
+                force_fallback.touch()
+                self.assertIn('"active_target": "FALLBACK"', await req("/state"))
+                self.assertIn('"routing_reason": "force_fallback_file"', await req("/state"))
+            finally:
+                server.close(); await server.wait_closed()
+
+    async def test_monitoring_timeout_returns_408(self):
+        cfg = self._monitoring_config()
+        health = m.HealthState(1, 1); health.set_initial_state(True)
+        server = await m.start_monitoring_server(cfg, health, m.RuntimeState(started_at=1.0), asyncio.Event())
+        port = server.sockets[0].getsockname()[1]
+        try:
+            with mock.patch("mc_failover_proxy.HTTP_READ_TIMEOUT_SECONDS", 0.01):
+                r, w = await asyncio.open_connection("127.0.0.1", port)
+                w.write(b"GET /health HTTP/1.1\r\n")
+                await w.drain()
+                data = await r.read(65535)
+                self.assertIn(b"408 Request Timeout", data)
+                await m.close_writer(w)
         finally:
             server.close(); await server.wait_closed()
 
