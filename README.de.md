@@ -408,7 +408,7 @@ Wenn du auf einem VPS arbeitest, lasse `listen_host` am besten auf `127.0.0.1` u
 
 ## Erweiterter Minecraft-Status-Check
 
-`minecraft_status` can optionally validate readiness details after JSON parsing (case-sensitive text matching):
+`minecraft_status` kann optional Readiness-Details nach dem JSON-Parsing prüfen (Groß-/Kleinschreibung wird bei Textfiltern beachtet):
 
 ```toml
 [healthcheck]
@@ -423,7 +423,10 @@ max_latency_ms = 1500
 min_players_max = 1
 ```
 
-- `enable-status=true` in `server.properties` is required.
-- In Velocity/Paper setups, verify which target actually answers the status ping.
-- Practical READY-MOTD flow: use `STARTING` during boot/restart, switch to `READY` when truly finished.
-- `motd_*` filters only reflect your server configuration; they do not replace plugin-level readiness checks.
+- `enable-status=true` in `server.properties` ist erforderlich.
+- Bei Velocity/Paper-Setups prüfen, welches Ziel den Status-Ping tatsächlich beantwortet.
+- Praktischer READY-MOTD-Ablauf: beim Start/Restart `STARTING`, nach vollständiger Bereitschaft `READY`.
+- Textfilter (`expected_version_contains`, `motd_must_contain`, `motd_must_not_contain`) sind case-sensitive.
+- JSON-basierte Filter (`expected_version_contains`, `motd_*`, `min_players_max`) benötigen `require_valid_json = true`.
+- `max_latency_ms` funktioniert auch bei `require_valid_json = false` (ohne JSON-Parsing).
+- `motd_*`-Filter sind nur so gut wie die Server-Konfiguration und ersetzen kein Plugin mit echter Readiness-Prüfung.

@@ -654,6 +654,8 @@ async def minecraft_status_health_check(
             return HealthCheckResult(ok=False, reason=f"invalid_packet_id:{packet_id}")
 
         latency_ms = (time.monotonic() - started) * 1000.0
+        if max_latency_ms > 0 and latency_ms > max_latency_ms:
+            return HealthCheckResult(ok=False, reason="latency_too_high", latency_ms=latency_ms)
         if not require_valid_json:
             return HealthCheckResult(ok=True, reason="status_packet_ok", latency_ms=latency_ms)
 

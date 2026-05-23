@@ -653,6 +653,31 @@ class StatusProtocolTests(unittest.IsolatedAsyncioTestCase):
         finally:
             server.close(); await server.wait_closed()
 
+    async def test_minecraft_status_latency_filter_without_json_required(self):
+        async def handler(reader, writer):
+            await reader.read(2048)
+            payload = m.write_varint(len(m.write_varint(0) + m.write_varint(0))) + (m.write_varint(0) + m.write_varint(0))
+            writer.write(payload)
+            await writer.drain()
+            await m.close_writer(writer)
+
+        server = await asyncio.start_server(handler, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            result = await m.minecraft_status_health_check(
+                "127.0.0.1",
+                port,
+                1.0,
+                767,
+                None,
+                False,
+                max_latency_ms=0.0001,
+            )
+            self.assertFalse(result.ok)
+            self.assertEqual(result.reason, "latency_too_high")
+        finally:
+            server.close(); await server.wait_closed()
+
     async def test_tcp_health_check_timeout_returns_result(self):
         with mock.patch("asyncio.open_connection", new=mock.AsyncMock(side_effect=asyncio.TimeoutError())):
             result = await m.tcp_health_check("127.0.0.1", 25564, 0.01)

@@ -422,4 +422,7 @@ min_players_max = 1
 - `enable-status=true` in `server.properties` is required.
 - In Velocity/Paper setups, verify which target actually answers the status ping.
 - Practical READY-MOTD flow: use `STARTING` during boot/restart, switch to `READY` when truly finished.
+- Text filters (`expected_version_contains`, `motd_must_contain`, `motd_must_not_contain`) are case-sensitive.
+- JSON-based filters (`expected_version_contains`, `motd_*`, `min_players_max`) require `require_valid_json = true`.
+- `max_latency_ms` also works when `require_valid_json = false` (without JSON parsing).
 - `motd_*` filters only reflect your server configuration; they do not replace plugin-level readiness checks.
