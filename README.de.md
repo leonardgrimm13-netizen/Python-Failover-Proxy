@@ -193,6 +193,25 @@ python3 mc_failover_proxy.py --config /pfad/config.toml
 - Standardpfad ist `./config.toml` im aktuellen Working Directory.
 - Für systemd ist `WorkingDirectory` deshalb wichtig.
 
+## CLI-Checks für Admins (ohne Listener-Start)
+
+Diese Befehle prüfen Setup und Erreichbarkeit, **ohne** den Proxy-Listener zu starten. Praktisch vor `systemctl enable/start` sowie für VPS-/Tailscale-/Velocity-Debugging.
+
+```bash
+python3 mc_failover_proxy.py --config config.toml --check-config
+python3 mc_failover_proxy.py --config config.toml --print-effective-config
+python3 mc_failover_proxy.py --config config.toml --test-main
+python3 mc_failover_proxy.py --config config.toml --test-fallback
+python3 mc_failover_proxy.py --config config.toml --test-healthcheck
+```
+
+- `--check-config`: lädt und validiert nur die Konfiguration.
+- `--print-effective-config`: gibt die effektive Config (inkl. Defaults) als JSON aus.
+- `--test-main`: prüft TCP-Erreichbarkeit von `main.host:main.port` (Routing-Ziel).
+- `--test-fallback`: prüft TCP-Erreichbarkeit von `fallback.host:fallback.port`.
+- `--test-healthcheck`: führt genau den konfigurierten Healthcheck aus (`tcp` oder `minecraft_status`).
+- Praxis-Hinweis: Wenn `--test-main` erfolgreich ist, aber `--test-healthcheck` fehlschlägt, liegt es meist am Minecraft-Status-Ping (`enable-status`), `status_hostname` oder `protocol_version`.
+
 ## systemd-Service (Beispiel)
 
 ```ini

@@ -193,6 +193,24 @@ python3 mc_failover_proxy.py --config /path/config.toml
 - Default config path is `./config.toml` relative to the current working directory.
 - For systemd, `WorkingDirectory` matters for predictable config resolution.
 
+## Admin CLI checks (no listener startup)
+
+These commands validate and test your setup **without** starting the proxy listener. They are useful before `systemctl enable/start`, and for VPS/Tailscale/Velocity/HAProxy troubleshooting.
+
+```bash
+python3 mc_failover_proxy.py --config config.toml --check-config
+python3 mc_failover_proxy.py --config config.toml --print-effective-config
+python3 mc_failover_proxy.py --config config.toml --test-main
+python3 mc_failover_proxy.py --config config.toml --test-fallback
+python3 mc_failover_proxy.py --config config.toml --test-healthcheck
+```
+
+- `--check-config`: loads and validates config only.
+- `--print-effective-config`: prints effective config (including defaults) as JSON.
+- `--test-main`: tests TCP reachability of `main.host:main.port` (routing target).
+- `--test-fallback`: tests TCP reachability of `fallback.host:fallback.port`.
+- `--test-healthcheck`: runs the configured healthcheck decision logic (`tcp` or `minecraft_status`).
+
 ## systemd service example
 
 ```ini

@@ -8,7 +8,7 @@ import signal
 import socket
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -678,16 +678,88 @@ async def health_loop(config: AppConfig, health: HealthState, stop_event: asynci
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Minecraft TCP Failover Proxy")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Pfad zur TOML-Konfiguration")
+    parser.add_argument("--check-config", action="store_true", help="Konfiguration laden und validieren, ohne Listener-Start")
+    parser.add_argument("--test-main", action="store_true", help="TCP-Erreichbarkeit für MAIN-Ziel testen")
+    parser.add_argument("--test-fallback", action="store_true", help="TCP-Erreichbarkeit für FALLBACK-Ziel testen")
+    parser.add_argument("--test-healthcheck", action="store_true", help="Konfigurierten Healthcheck gegen Ziel ausführen")
+    parser.add_argument("--print-effective-config", action="store_true", help="Effektive Konfiguration als JSON ausgeben")
     return parser.parse_args()
+
+
+def config_to_dict(config: AppConfig) -> dict[str, Any]:
+    def _serialize(value: Any) -> Any:
+        if is_dataclass(value):
+            return {key: _serialize(val) for key, val in asdict(value).items()}
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, list):
+            return [_serialize(item) for item in value]
+        if isinstance(value, dict):
+            return {str(k): _serialize(v) for k, v in value.items()}
+        return value
+
+    return _serialize(config)
+
+
+async def test_target_tcp(name: str, target: TargetConfig, timeout: float) -> HealthCheckResult:
+    result = await tcp_health_check(target.host, target.port, timeout)
+    host_port = f"{target.host}:{target.port}"
+    if result.ok:
+        latency = f"{result.latency_ms:.1f}" if result.latency_ms is not None else "n/a"
+        print(f"OK: {name} erreichbar {host_port} latency={latency}ms")
+    else:
+        print(f"FEHLER: {name} nicht erreichbar {host_port} reason={result.reason}", file=sys.stderr)
+    return result
+
+
+async def run_cli_checks(args: argparse.Namespace, config: AppConfig) -> int:
+    all_ok = True
+
+    if args.check_config:
+        print(f"OK: Config ist gültig: {args.config}")
+
+    if args.print_effective_config:
+        print(json.dumps(config_to_dict(config), indent=2, sort_keys=True))
+
+    if args.test_main:
+        all_ok = (await test_target_tcp("MAIN", config.main, config.healthcheck.timeout_seconds)).ok and all_ok
+
+    if args.test_fallback:
+        all_ok = (await test_target_tcp("FALLBACK", config.fallback, config.healthcheck.timeout_seconds)).ok and all_ok
+
+    if args.test_healthcheck:
+        target = get_healthcheck_target(config)
+        result = await check_main_server(config)
+        target_text = f"{target.host}:{target.port}"
+        if result.ok:
+            latency = f"{result.latency_ms:.1f}" if result.latency_ms is not None else "n/a"
+            version = result.version_name or "n/a"
+            players = f"{result.players_online if result.players_online is not None else 'n/a'}/{result.players_max if result.players_max is not None else 'n/a'}"
+            print(
+                f"OK: Healthcheck erfolgreich mode={config.healthcheck.mode} target={target_text} "
+                f"latency={latency}ms version={version} players={players} reason={result.reason}"
+            )
+        else:
+            print(
+                f"FEHLER: Healthcheck fehlgeschlagen mode={config.healthcheck.mode} target={target_text} reason={result.reason}",
+                file=sys.stderr,
+            )
+            all_ok = False
+
+    return 0 if all_ok else 1
 
 
 async def run() -> int:
     args = parse_args()
+    check_mode = any((args.check_config, args.test_main, args.test_fallback, args.test_healthcheck, args.print_effective_config))
     try:
         config = load_config(args.config)
     except ConfigError as exc:
         print(f"Konfigurationsfehler: {exc}", file=sys.stderr)
         return 1
+
+    if check_mode:
+        return await run_cli_checks(args, config)
 
     setup_logging(config.logging.level)
     health = HealthState(config.healthcheck.fail_after, config.healthcheck.recover_after)

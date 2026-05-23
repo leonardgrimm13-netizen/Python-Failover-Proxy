@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -227,6 +228,15 @@ class ConfigTests(unittest.TestCase):
 
 
 class CoreBehaviorTests(unittest.TestCase):
+    def test_parse_args_accepts_cli_check_flags(self):
+        with mock.patch("sys.argv", ["prog", "--check-config", "--test-main", "--test-fallback", "--test-healthcheck", "--print-effective-config"]):
+            args = m.parse_args()
+        self.assertTrue(args.check_config)
+        self.assertTrue(args.test_main)
+        self.assertTrue(args.test_fallback)
+        self.assertTrue(args.test_healthcheck)
+        self.assertTrue(args.print_effective_config)
+
     def test_health_state_threshold_behavior(self):
         state = m.HealthState(fail_after=3, recover_after=3)
         state.set_initial_state(True)
@@ -432,6 +442,68 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await r.read(1), b"")
         await m.close_writer(w)
         proxy.close(); await proxy.wait_closed()
+
+
+class CliChecksTests(unittest.IsolatedAsyncioTestCase):
+    async def test_check_config_valid_and_invalid(self):
+        with mock.patch("mc_failover_proxy.parse_args", return_value=mock.Mock(
+            config=REPO_ROOT / "config.example.toml",
+            check_config=True, test_main=False, test_fallback=False, test_healthcheck=False, print_effective_config=False
+        )):
+            self.assertEqual(await m.run(), 0)
+
+        with mock.patch("mc_failover_proxy.parse_args", return_value=mock.Mock(
+            config=REPO_ROOT / "nope.toml",
+            check_config=True, test_main=False, test_fallback=False, test_healthcheck=False, print_effective_config=False
+        )):
+            self.assertEqual(await m.run(), 1)
+
+    async def test_check_mode_never_starts_listener(self):
+        with mock.patch("mc_failover_proxy.asyncio.start_server", new=mock.AsyncMock()) as start_server:
+            args = mock.Mock(config=REPO_ROOT / "config.example.toml", check_config=True, test_main=False, test_fallback=False, test_healthcheck=False, print_effective_config=False)
+            with mock.patch("mc_failover_proxy.parse_args", return_value=args):
+                self.assertEqual(await m.run(), 0)
+            start_server.assert_not_called()
+
+    async def test_print_effective_config_outputs_valid_json(self):
+        cfg = m.load_config(REPO_ROOT / "config.example.toml")
+        payload = m.config_to_dict(cfg)
+        self.assertIn("proxy", payload)
+        self.assertIn("main", payload)
+        self.assertIn("fallback", payload)
+        self.assertIn("healthcheck", payload)
+        self.assertIn("connection", payload)
+        self.assertIn("logging", payload)
+        encoded = json.dumps(payload, indent=2, sort_keys=True)
+        self.assertIsInstance(json.loads(encoded), dict)
+
+    async def test_test_main_and_fallback_use_expected_targets(self):
+        cfg = m.load_config(REPO_ROOT / "config.example.toml")
+        args = mock.Mock(check_config=False, print_effective_config=False, test_main=True, test_fallback=True, test_healthcheck=False, config=REPO_ROOT / "config.example.toml")
+        ok_result = m.HealthCheckResult(ok=True, reason="ok", latency_ms=1.0)
+        with mock.patch("mc_failover_proxy.tcp_health_check", new=mock.AsyncMock(return_value=ok_result)) as tcp:
+            rc = await m.run_cli_checks(args, cfg)
+        self.assertEqual(rc, 0)
+        self.assertEqual(tcp.await_args_list[0].args[:2], (cfg.main.host, cfg.main.port))
+        self.assertEqual(tcp.await_args_list[1].args[:2], (cfg.fallback.host, cfg.fallback.port))
+
+    async def test_test_healthcheck_uses_check_main_server(self):
+        cfg = m.load_config(REPO_ROOT / "config.example.toml")
+        args = mock.Mock(check_config=False, print_effective_config=False, test_main=False, test_fallback=False, test_healthcheck=True, config=REPO_ROOT / "config.example.toml")
+        with mock.patch("mc_failover_proxy.check_main_server", new=mock.AsyncMock(return_value=m.HealthCheckResult(True, "ok", 1.2))) as checker:
+            rc = await m.run_cli_checks(args, cfg)
+        self.assertEqual(rc, 0)
+        checker.assert_awaited_once_with(cfg)
+
+    async def test_multiple_flags_fail_if_one_check_fails(self):
+        cfg = m.load_config(REPO_ROOT / "config.example.toml")
+        args = mock.Mock(check_config=True, print_effective_config=True, test_main=True, test_fallback=True, test_healthcheck=True, config=REPO_ROOT / "config.example.toml")
+        tcp_results = [m.HealthCheckResult(True, "ok", 1.0), m.HealthCheckResult(False, "down")]
+        with mock.patch("mc_failover_proxy.tcp_health_check", new=mock.AsyncMock(side_effect=tcp_results)), mock.patch(
+            "mc_failover_proxy.check_main_server", new=mock.AsyncMock(return_value=m.HealthCheckResult(True, "ok", 1.0))
+        ):
+            rc = await m.run_cli_checks(args, cfg)
+        self.assertEqual(rc, 1)
 
 if __name__ == "__main__":
     unittest.main()
