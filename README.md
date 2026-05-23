@@ -373,3 +373,20 @@ python3 mc_failover_proxy.py --config config.toml --test-healthcheck
 ---
 
 [Deutsch](README.de.md)
+
+## Monitoring
+
+Optional built-in HTTP monitoring is available and disabled by default.
+
+- Default bind is localhost only (`127.0.0.1`).
+- Keep this endpoint private; it can expose internal routing and health data.
+
+```bash
+curl http://127.0.0.1:8080/health
+curl http://127.0.0.1:8080/ready
+curl http://127.0.0.1:8080/state
+curl http://127.0.0.1:8080/metrics
+```
+
+Use `/health` or `/ready` for Uptime Kuma, and `/metrics` for Prometheus scraping.
+Do not expose the monitoring port directly to the public internet. Prefer Tailscale, WireGuard, SSH tunnels, or a reverse proxy with authentication.

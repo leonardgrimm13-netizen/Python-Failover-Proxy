@@ -68,6 +68,7 @@ class ConfigTests(unittest.TestCase):
             connection=m.ConnectionConfig(5.0, 65536, 300.0, False, False, 4096),
             logging=m.LoggingConfig("INFO"),
             maintenance=m.MaintenanceConfig("auto", None, None),
+            monitoring=m.MonitoringConfig(False, "127.0.0.1", 8080, False),
         )
 
     def test_repo_config_toml_is_valid(self):
@@ -154,6 +155,24 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg.maintenance.mode, "auto")
         self.assertIsNone(cfg.maintenance.force_fallback_file)
         self.assertIsNone(cfg.maintenance.force_main_file)
+        self.assertFalse(cfg.monitoring.enabled)
+        self.assertEqual(cfg.monitoring.listen_host, "127.0.0.1")
+        self.assertEqual(cfg.monitoring.listen_port, 8080)
+        self.assertFalse(cfg.monitoring.allow_remote)
+
+    def test_monitoring_config_validation(self):
+        bad_enabled = VALID_CONFIG_TOML + '\n[monitoring]\nenabled = "yes"\n'
+        with self.assertRaises(m.ConfigError):
+            m.load_config(self.write_temp_config(bad_enabled))
+        bad_port = VALID_CONFIG_TOML + '\n[monitoring]\nenabled = true\nlisten_port = 70000\n'
+        with self.assertRaises(m.ConfigError):
+            m.load_config(self.write_temp_config(bad_port))
+        blocked_remote = VALID_CONFIG_TOML + '\n[monitoring]\nenabled = true\nlisten_host = "0.0.0.0"\nallow_remote = false\n'
+        with self.assertRaises(m.ConfigError):
+            m.load_config(self.write_temp_config(blocked_remote))
+        allowed_remote = VALID_CONFIG_TOML + '\n[monitoring]\nenabled = true\nlisten_host = "0.0.0.0"\nallow_remote = true\n'
+        cfg = m.load_config(self.write_temp_config(allowed_remote))
+        self.assertTrue(cfg.monitoring.allow_remote)
 
     def test_invalid_maintenance_mode(self):
         text = VALID_CONFIG_TOML + '\n[maintenance]\nmode = "broken"\n'
@@ -386,6 +405,7 @@ class StatusProtocolTests(unittest.IsolatedAsyncioTestCase):
             connection=m.ConnectionConfig(5.0, 65536, 300.0, False, False, 4096),
             logging=m.LoggingConfig("INFO"),
             maintenance=m.MaintenanceConfig("auto", None, None),
+            monitoring=m.MonitoringConfig(False, "127.0.0.1", 8080, False),
         )
         self.assertEqual(m.get_healthcheck_target(cfg), m.TargetConfig("127.0.0.1", 25564))
         cfg_h = m.AppConfig(**{**cfg.__dict__, "healthcheck": m.HealthCheckConfig("tcp", 3, 2, 2, 2, 0.0, "10.0.0.2", None, 767, None, True, False, 0.0)})
@@ -421,7 +441,7 @@ class StatusProtocolTests(unittest.IsolatedAsyncioTestCase):
             "mc_failover_proxy.time", new=mock.Mock(monotonic=lambda: next(monotonic_values))
         ):
             with self.assertLogs("mc-failover", level="INFO") as captured:
-                await m.health_loop(cfg, health, stop_event)
+                await m.health_loop(cfg, health, m.RuntimeState(started_at=0.0), stop_event)
         recovery_logs = [line for line in captured.output if "Recovery-Stabilisierung" in line]
         self.assertEqual(len(recovery_logs), 1)
 
@@ -450,7 +470,7 @@ class StatusProtocolTests(unittest.IsolatedAsyncioTestCase):
             "mc_failover_proxy.time", new=mock.Mock(monotonic=lambda: next(monotonic_values))
         ):
             with self.assertLogs("mc-failover", level="INFO") as captured:
-                await m.health_loop(cfg, health, stop_event)
+                await m.health_loop(cfg, health, m.RuntimeState(started_at=0.0), stop_event)
         progress_logs = [line for line in captured.output if "weiterhin in Recovery-Stabilisierung" in line]
         self.assertEqual(len(progress_logs), 1)
 
@@ -479,7 +499,7 @@ class StatusProtocolTests(unittest.IsolatedAsyncioTestCase):
             "mc_failover_proxy.time", new=mock.Mock(monotonic=lambda: next(monotonic_values))
         ):
             with self.assertLogs("mc-failover", level="INFO") as captured:
-                await m.health_loop(cfg, health, stop_event)
+                await m.health_loop(cfg, health, m.RuntimeState(started_at=0.0), stop_event)
         reset_logs = [line for line in captured.output if "Recovery wurde durch fehlgeschlagenen Healthcheck zurückgesetzt" in line]
         self.assertEqual(len(reset_logs), 1)
 
@@ -508,7 +528,7 @@ class StatusProtocolTests(unittest.IsolatedAsyncioTestCase):
             "mc_failover_proxy.time", new=mock.Mock(monotonic=lambda: next(monotonic_values))
         ):
             with self.assertLogs("mc-failover", level="INFO") as captured:
-                await m.health_loop(cfg, health, stop_event)
+                await m.health_loop(cfg, health, m.RuntimeState(started_at=0.0), stop_event)
         recovery_logs = [line for line in captured.output if "Recovery-Stabilisierung" in line]
         self.assertEqual(len(recovery_logs), 0)
 
@@ -592,6 +612,7 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
             ),
             logging=m.LoggingConfig("INFO"),
             maintenance=m.MaintenanceConfig("auto", None, None),
+            monitoring=m.MonitoringConfig(False, "127.0.0.1", 8080, False),
         )
 
     async def test_connection_limiter_accepts_then_rejects(self):
@@ -607,7 +628,7 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         health.set_initial_state(True)
         limiter = m.ConnectionLimiter(1)
         async def on_connect(reader, writer):
-            await m.handle_client(cfg, health, limiter, reader, writer)
+            await m.handle_client(cfg, health, limiter, m.RuntimeState(started_at=0.0), reader, writer)
         listener = await asyncio.start_server(on_connect, "127.0.0.1", 0)
         port = listener.sockets[0].getsockname()[1]
         r, w = await asyncio.open_connection("127.0.0.1", port)
@@ -628,7 +649,7 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         cfg = self.make_config(port, port, idle_timeout_seconds=0.1)
         health = m.HealthState(1, 1); health.set_initial_state(True)
         limiter = m.ConnectionLimiter(10)
-        client_server = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, cr, cw), "127.0.0.1", 0)
+        client_server = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, m.RuntimeState(started_at=0.0), cr, cw), "127.0.0.1", 0)
         pport = client_server.sockets[0].getsockname()[1]
         reader, writer = await asyncio.open_connection("127.0.0.1", pport)
         await asyncio.sleep(0.3)
@@ -651,7 +672,7 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         cfg = self.make_config(9, fb_port, connect_fallback_on_main_connect_failure=True, max_connections=10)
         health = m.HealthState(1, 1); health.set_initial_state(True)
         limiter = m.ConnectionLimiter(10)
-        proxy = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, cr, cw), "127.0.0.1", 0)
+        proxy = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, m.RuntimeState(started_at=0.0), cr, cw), "127.0.0.1", 0)
         pport = proxy.sockets[0].getsockname()[1]
         r, w = await asyncio.open_connection("127.0.0.1", pport)
         w.write(b"abc"); await w.drain()
@@ -665,13 +686,77 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         cfg = self.make_config(9, 10, connect_fallback_on_main_connect_failure=True, max_connections=10)
         health = m.HealthState(1, 1); health.set_initial_state(True)
         limiter = m.ConnectionLimiter(10)
-        proxy = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, cr, cw), "127.0.0.1", 0)
+        proxy = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, m.RuntimeState(started_at=0.0), cr, cw), "127.0.0.1", 0)
         pport = proxy.sockets[0].getsockname()[1]
         r, w = await asyncio.open_connection("127.0.0.1", pport)
         await asyncio.sleep(0.2)
         self.assertEqual(await r.read(1), b"")
         await m.close_writer(w)
         proxy.close(); await proxy.wait_closed()
+
+    async def test_connection_rejected_and_active_counter(self):
+        hold = asyncio.Event()
+        release = asyncio.Event()
+
+        async def backend(reader, writer):
+            hold.set()
+            await release.wait()
+            await m.close_writer(writer)
+
+        target = await asyncio.start_server(backend, "127.0.0.1", 0)
+        port = target.sockets[0].getsockname()[1]
+        cfg = self.make_config(port, port, max_connections=1)
+        health = m.HealthState(1, 1); health.set_initial_state(True)
+        limiter = m.ConnectionLimiter(1)
+        state = m.RuntimeState(started_at=0.0)
+        proxy = await asyncio.start_server(lambda cr, cw: m.handle_client(cfg, health, limiter, state, cr, cw), "127.0.0.1", 0)
+        pport = proxy.sockets[0].getsockname()[1]
+        r1, w1 = await asyncio.open_connection("127.0.0.1", pport)
+        await hold.wait()
+        r2, w2 = await asyncio.open_connection("127.0.0.1", pport)
+        await asyncio.sleep(0.1)
+        self.assertGreaterEqual(state.rejected_connections, 1)
+        self.assertGreaterEqual(state.active_connections, 1)
+        release.set()
+        await asyncio.sleep(0.2)
+        self.assertEqual(state.active_connections, 0)
+        await m.close_writer(w1); await m.close_writer(w2)
+        _ = await r1.read(1); _ = await r2.read(1)
+        proxy.close(); await proxy.wait_closed()
+        target.close(); await target.wait_closed()
+
+
+class MonitoringTests(unittest.IsolatedAsyncioTestCase):
+    async def test_monitoring_endpoints(self):
+        cfg = m.load_config(REPO_ROOT / "config.example.toml")
+        cfg = m.AppConfig(**{**cfg.__dict__, "monitoring": m.MonitoringConfig(True, "127.0.0.1", 0, False)})
+        health = m.HealthState(1, 1); health.set_initial_state(True)
+        state = m.RuntimeState(started_at=1.0, active_connections=2, total_connections=5, rejected_connections=1, active_target="FALLBACK", routing_reason="health_fallback")
+        state.last_health_result = m.HealthCheckResult(ok=True, reason="status_json_ok", latency_ms=12.3)
+        state.last_health_check_at = 2.0
+        server = await m.start_monitoring_server(cfg, health, state, asyncio.Event())
+        port = server.sockets[0].getsockname()[1]
+        try:
+            async def req(raw: bytes) -> bytes:
+                r, w = await asyncio.open_connection("127.0.0.1", port)
+                w.write(raw); await w.drain()
+                data = await r.read(65535)
+                await m.close_writer(w)
+                return data
+
+            health_resp = await req(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            self.assertIn(b"200 OK", health_resp)
+            self.assertIn(b'"service": "mc-failover"', health_resp)
+            state_resp = await req(b"GET /state HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            self.assertIn(b"active_connections", state_resp)
+            metrics_resp = await req(b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            self.assertIn(b"mc_failover_total_connections", metrics_resp)
+            not_found = await req(b"GET /nope HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            self.assertIn(b"404 Not Found", not_found)
+            method = await req(b"POST /health HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            self.assertIn(b"405 Method Not Allowed", method)
+        finally:
+            server.close(); await server.wait_closed()
 
 
 class CliChecksTests(unittest.IsolatedAsyncioTestCase):
