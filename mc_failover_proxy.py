@@ -23,6 +23,7 @@ VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 MAX_VARINT_BYTES = 5
 MAX_STATUS_JSON_BYTES = 262144
 MAX_PACKET_BYTES = MAX_STATUS_JSON_BYTES + 4096
+RECOVERY_PROGRESS_LOG_INTERVAL_SECONDS = 15.0
 
 log = logging.getLogger("mc-failover")
 
@@ -127,6 +128,14 @@ class HealthState:
         self._failures: int = 0
         self._recovery_started_at: Optional[float] = None
 
+    @property
+    def successes(self) -> int:
+        return self._successes
+
+    @property
+    def failures(self) -> int:
+        return self._failures
+
     def set_initial_state(self, ok: bool) -> None:
         self.main_healthy = ok
         self._successes = 1 if ok else 0
@@ -138,6 +147,15 @@ class HealthState:
             return 0.0
         current = time.monotonic() if now is None else now
         return max(0.0, self.min_recovery_seconds - (current - self._recovery_started_at))
+
+    def recovery_elapsed_seconds(self, now: Optional[float] = None) -> float:
+        if self.main_healthy or self.min_recovery_seconds <= 0 or self._recovery_started_at is None:
+            return 0.0
+        current = time.monotonic() if now is None else now
+        return max(0.0, current - self._recovery_started_at)
+
+    def is_recovering(self, now: Optional[float] = None) -> bool:
+        return self.recovery_remaining_seconds(now) > 0
 
     def report(self, ok: bool, now: Optional[float] = None) -> Optional[bool]:
         current = time.monotonic() if now is None else now
@@ -724,10 +742,13 @@ async def handle_client(config: AppConfig, health: HealthState, limiter: Connect
 async def health_loop(config: AppConfig, health: HealthState, stop_event: asyncio.Event) -> None:
     target = get_healthcheck_target(config)
     log.info("Healthcheck gestartet (%s): %s:%s", config.healthcheck.mode, target.host, target.port)
+    last_recovery_log_at: Optional[float] = None
+    was_recovering = False
     while not stop_event.is_set():
         try:
             result = await check_main_server(config)
-            changed_to = health.report(result.ok)
+            now = time.monotonic()
+            changed_to = health.report(result.ok, now=now)
             if config.healthcheck.log_status_details and result.ok:
                 log.info(
                     "Healthcheck ok (%s): latency=%.1fms version=%s players=%s/%s reason=%s",
@@ -741,16 +762,38 @@ async def health_loop(config: AppConfig, health: HealthState, stop_event: asynci
             elif not result.ok:
                 log.debug("Healthcheck nicht ok: %s", result.reason)
 
-            if result.ok and not health.main_healthy and health.min_recovery_seconds > 0:
-                remaining = health.recovery_remaining_seconds()
-                if remaining > 0:
+            if result.ok and health.is_recovering(now=now):
+                elapsed = health.recovery_elapsed_seconds(now=now)
+                should_log_progress = False
+                if not was_recovering:
                     log.info(
-                        "MAIN antwortet wieder, warte auf Recovery-Stabilität: %s/%s successful checks, %.1fs/%.1fs",
-                        health._successes,
-                        health.recover_after,
-                        health.min_recovery_seconds - remaining,
+                        "MAIN antwortet wieder, Recovery-Stabilisierung gestartet: %.1fs/%.1fs",
+                        elapsed,
                         health.min_recovery_seconds,
                     )
+                    last_recovery_log_at = now
+                    was_recovering = True
+                elif (
+                    last_recovery_log_at is not None
+                    and now - last_recovery_log_at >= RECOVERY_PROGRESS_LOG_INTERVAL_SECONDS
+                ):
+                    should_log_progress = True
+                if should_log_progress:
+                    log.info(
+                        "MAIN weiterhin in Recovery-Stabilisierung: %.1fs/%.1fs, successful checks=%s/%s",
+                        elapsed,
+                        health.min_recovery_seconds,
+                        health.successes,
+                        health.recover_after,
+                    )
+                    last_recovery_log_at = now
+            elif was_recovering and not result.ok:
+                log.info("MAIN-Recovery wurde durch fehlgeschlagenen Healthcheck zurückgesetzt: %s", result.reason)
+                was_recovering = False
+                last_recovery_log_at = None
+            elif was_recovering and not health.is_recovering(now=now):
+                was_recovering = False
+                last_recovery_log_at = None
 
             if changed_to is True:
                 log.warning("FALLBACK -> MAIN (%s:%s): %s", target.host, target.port, result.reason)
