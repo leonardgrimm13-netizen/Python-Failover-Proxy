@@ -584,9 +584,7 @@ def validate_config(config: AppConfig) -> None:
     if not isinstance(config.proxy_protocol.send, bool):
         raise ConfigError("proxy_protocol.send muss bool sein.")
     if not _is_int(config.proxy_protocol.version) or config.proxy_protocol.version not in {1, 2}:
-        raise ConfigError(
-            "proxy_protocol.version muss 1 oder 2 sein."
-        )
+        raise ConfigError("proxy_protocol.version muss 1 oder 2 sein.")
     for field_name, version_value in (
         ("proxy_protocol.accept_version", config.proxy_protocol.accept_version),
         ("proxy_protocol.send_version", config.proxy_protocol.send_version),
@@ -811,21 +809,23 @@ def parse_proxy_v2_header(data: bytes) -> ProxyProtocolInfo:
         raise ValueError("Invalid PROXY v2 length")
     if command == 0x0:
         return ProxyProtocolInfo("0.0.0.0", "0.0.0.0", 0, 0, "UNKNOWN")
+    if fam_proto == 0x00:
+        return ProxyProtocolInfo("0.0.0.0", "0.0.0.0", 0, 0, "UNKNOWN")
     fam = fam_proto >> 4
     proto = fam_proto & 0x0F
     if proto != 0x1:
         raise ValueError("Only STREAM/TCP is supported for PROXY v2")
     payload = data[16:]
     if fam == 0x1:
-        if addr_len != 12:
-            raise ValueError("Invalid PROXY v2 TCP4 address length")
+        if addr_len < 12:
+            raise ValueError("Invalid PROXY v2 TCP4 address length (min 12)")
         src = str(ipaddress.IPv4Address(payload[0:4]))
         dst = str(ipaddress.IPv4Address(payload[4:8]))
         src_port, dst_port = struct.unpack("!HH", payload[8:12])
         family = "TCP4"
     elif fam == 0x2:
-        if addr_len != 36:
-            raise ValueError("Invalid PROXY v2 TCP6 address length")
+        if addr_len < 36:
+            raise ValueError("Invalid PROXY v2 TCP6 address length (min 36)")
         src = str(ipaddress.IPv6Address(payload[0:16]))
         dst = str(ipaddress.IPv6Address(payload[16:32]))
         src_port, dst_port = struct.unpack("!HH", payload[32:36])

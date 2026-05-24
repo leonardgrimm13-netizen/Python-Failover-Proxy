@@ -218,7 +218,14 @@ class ConfigTests(unittest.TestCase):
             self.write_temp_config(VALID_CONFIG_TOML + "\n[proxy_protocol]\nversion = 2\n")
         )
         self.assertEqual(cfg_v2.proxy_protocol.version, 2)
-        for bad in ['accept = "yes"', 'send = "yes"', "version = 0", "version = 3", 'version = "2"', 'trusted_proxy_ips = ["bad"]']:
+        for bad in [
+            'accept = "yes"',
+            'send = "yes"',
+            "version = 0",
+            "version = 3",
+            'version = "2"',
+            'trusted_proxy_ips = ["bad"]',
+        ]:
             broken = VALID_CONFIG_TOML + f"\n[proxy_protocol]\n{bad}\n"
             with self.assertRaises(m.ConfigError):
                 m.load_config(self.write_temp_config(broken))
@@ -547,6 +554,10 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertEqual(info.family, "TCP4")
         self.assertEqual(info.source_ip, "203.0.113.10")
         self.assertEqual(info.destination_ip, "198.51.100.20")
+        header_with_tlv = header + b"\xee\x00\x01\x01"
+        header_with_tlv = header_with_tlv[:14] + b"\x00\x10" + header_with_tlv[16:]
+        info_tlv = m.parse_proxy_v2_header(header_with_tlv)
+        self.assertEqual(info_tlv.family, "TCP4")
 
     def test_proxy_protocol_v2_build_parse_roundtrip_tcp6(self):
         header = m.build_proxy_v2_header("2001:db8::1", "2001:db8::2", 54321, 25565)
@@ -554,10 +565,17 @@ class CoreBehaviorTests(unittest.TestCase):
         self.assertEqual(info.family, "TCP6")
         self.assertEqual(info.source_port, 54321)
         self.assertEqual(info.destination_port, 25565)
+        header_with_tlv = header + b"\xee\x00\x01\x01"
+        header_with_tlv = header_with_tlv[:14] + b"\x00\x28" + header_with_tlv[16:]
+        info_tlv = m.parse_proxy_v2_header(header_with_tlv)
+        self.assertEqual(info_tlv.family, "TCP6")
 
     def test_proxy_protocol_v2_unknown_and_local(self):
         info_unknown = m.parse_proxy_v2_header(m.build_proxy_v2_unknown_header())
         self.assertEqual(info_unknown.family, "UNKNOWN")
+        proxy_cmd_unspec = m.PROXY_V2_SIGNATURE + bytes([0x21, 0x00]) + b"\x00\x00"
+        info_unspec = m.parse_proxy_v2_header(proxy_cmd_unspec)
+        self.assertEqual(info_unspec.family, "UNKNOWN")
         local = m.PROXY_V2_SIGNATURE + bytes([0x20, 0x11]) + b"\x00\x0c" + (b"\x00" * 12)
         info_local = m.parse_proxy_v2_header(local)
         self.assertEqual(info_local.family, "UNKNOWN")
@@ -574,11 +592,15 @@ class CoreBehaviorTests(unittest.TestCase):
             bad_cmd[12] = 0x23
             m.parse_proxy_v2_header(bytes(bad_cmd))
         with self.assertRaises(ValueError):
-            bad_udp = bytearray(m.build_proxy_v2_header("203.0.113.10", "198.51.100.20", 1000, 2000))
+            bad_udp = bytearray(
+                m.build_proxy_v2_header("203.0.113.10", "198.51.100.20", 1000, 2000)
+            )
             bad_udp[13] = 0x12
             m.parse_proxy_v2_header(bytes(bad_udp))
         with self.assertRaises(ValueError):
-            bad_len = bytearray(m.build_proxy_v2_header("203.0.113.10", "198.51.100.20", 1000, 2000))
+            bad_len = bytearray(
+                m.build_proxy_v2_header("203.0.113.10", "198.51.100.20", 1000, 2000)
+            )
             bad_len[14:16] = b"\x00\x0b"
             m.parse_proxy_v2_header(bytes(bad_len))
 
@@ -1299,7 +1321,9 @@ class StatusProtocolTests(unittest.IsolatedAsyncioTestCase):
 
 class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
     def make_config(self, main_port: int, fallback_port: int, **overrides) -> m.AppConfig:
-        proxy_protocol = overrides.get("proxy_protocol", m.ProxyProtocolConfig(False, False, 1, None, None, ()))
+        proxy_protocol = overrides.get(
+            "proxy_protocol", m.ProxyProtocolConfig(False, False, 1, None, None, ())
+        )
         return m.AppConfig(
             proxy=m.ProxyConfig("127.0.0.1", 25565),
             main=m.TargetConfig("127.0.0.1", main_port),
@@ -1545,7 +1569,10 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         srv = await asyncio.start_server(backend, "127.0.0.1", 0)
         port = srv.sockets[0].getsockname()[1]
         cfg = self.make_config(
-            port, port, max_connections=10, proxy_protocol=m.ProxyProtocolConfig(False, True, 1, None, None, ())
+            port,
+            port,
+            max_connections=10,
+            proxy_protocol=m.ProxyProtocolConfig(False, True, 1, None, None, ()),
         )
         health = m.HealthState(1, 1)
         health.set_initial_state(True)
