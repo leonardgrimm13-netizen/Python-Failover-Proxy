@@ -459,7 +459,11 @@ def validate_config(config: AppConfig) -> None:
             raise ConfigError(f"{key} muss int oder float und > 0 sein (aktuell: {value!r}).")
 
     idle_timeout = config.connection.idle_timeout_seconds
-    if isinstance(idle_timeout, bool) or not isinstance(idle_timeout, (int, float)) or idle_timeout < 0:
+    if (
+        isinstance(idle_timeout, bool)
+        or not isinstance(idle_timeout, (int, float))
+        or idle_timeout < 0
+    ):
         raise ConfigError(
             f"connection.idle_timeout_seconds muss int oder float und >= 0 sein (aktuell: {idle_timeout!r})."
         )

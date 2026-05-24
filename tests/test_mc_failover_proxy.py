@@ -310,6 +310,32 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaises(m.ConfigError, msg=line):
                 m.load_config(self.write_temp_config(text))
 
+    def test_idle_timeout_zero_is_valid_and_disables_idle_disconnect(self):
+        text = VALID_CONFIG_TOML.replace(
+            "buffer_size = 65536", "buffer_size = 65536\nidle_timeout_seconds = 0"
+        )
+        cfg = m.load_config(self.write_temp_config(text))
+        self.assertEqual(cfg.connection.idle_timeout_seconds, 0)
+
+    def test_non_idle_timeouts_must_be_greater_than_zero(self):
+        invalid_lines = [
+            "interval_seconds = 0",
+            "timeout_seconds = 0",
+            "timeout_seconds = 0",
+        ]
+
+        replacements = [
+            ("interval_seconds = 3.0", invalid_lines[0]),
+            ("timeout_seconds = 2.0", invalid_lines[1]),
+            ("timeout_seconds = 5.0", invalid_lines[2]),
+        ]
+
+        for original, bad in replacements:
+            with self.subTest(field=bad):
+                text = VALID_CONFIG_TOML.replace(original, bad, 1)
+                with self.assertRaises(m.ConfigError):
+                    m.load_config(self.write_temp_config(text))
+
     def test_validation_new_connection_fields(self):
         invalid_lines = [
             "buffer_size = 1",
