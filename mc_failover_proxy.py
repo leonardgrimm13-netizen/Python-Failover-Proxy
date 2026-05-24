@@ -454,16 +454,15 @@ def validate_config(config: AppConfig) -> None:
         ("healthcheck.interval_seconds", config.healthcheck.interval_seconds),
         ("healthcheck.timeout_seconds", config.healthcheck.timeout_seconds),
         ("connection.timeout_seconds", config.connection.timeout_seconds),
-        ("connection.idle_timeout_seconds", config.connection.idle_timeout_seconds),
     ):
-        min_allowed = 0 if key == "connection.idle_timeout_seconds" else 0
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or value < min_allowed
-            or (key != "connection.idle_timeout_seconds" and value <= 0)
-        ):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
             raise ConfigError(f"{key} muss int oder float und > 0 sein (aktuell: {value!r}).")
+
+    idle_timeout = config.connection.idle_timeout_seconds
+    if isinstance(idle_timeout, bool) or not isinstance(idle_timeout, (int, float)) or idle_timeout < 0:
+        raise ConfigError(
+            f"connection.idle_timeout_seconds muss int oder float und >= 0 sein (aktuell: {idle_timeout!r})."
+        )
 
     if (
         isinstance(config.healthcheck.min_recovery_seconds, bool)
