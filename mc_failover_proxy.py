@@ -155,7 +155,9 @@ class ProxyProtocolInfo:
     family: str
 
 
-def update_runtime_routing_state(runtime_state: RuntimeState, target_name: str, reason: str) -> None:
+def update_runtime_routing_state(
+    runtime_state: RuntimeState, target_name: str, reason: str
+) -> None:
     runtime_state.active_target = target_name
     runtime_state.routing_reason = reason
 
@@ -175,7 +177,9 @@ class TargetDecision:
 
 
 class HealthState:
-    def __init__(self, fail_after: int, recover_after: int, min_recovery_seconds: float = 0.0) -> None:
+    def __init__(
+        self, fail_after: int, recover_after: int, min_recovery_seconds: float = 0.0
+    ) -> None:
         self.fail_after = fail_after
         self.recover_after = recover_after
         self.min_recovery_seconds = float(min_recovery_seconds)
@@ -223,7 +227,10 @@ class HealthState:
                 if self._recovery_started_at is None:
                     self._recovery_started_at = current
                 recovery_elapsed = current - self._recovery_started_at
-                if self._successes >= self.recover_after and recovery_elapsed >= self.min_recovery_seconds:
+                if (
+                    self._successes >= self.recover_after
+                    and recovery_elapsed >= self.min_recovery_seconds
+                ):
                     self.main_healthy = True
                     self._recovery_started_at = None
         else:
@@ -285,7 +292,9 @@ def load_config(path: Path) -> AppConfig:
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"Ungültiges TOML in {path}: {exc}") from exc
     except OSError as exc:
-        raise ConfigError(f"Konfigurationsdatei konnte nicht gelesen werden: {path} ({exc})") from exc
+        raise ConfigError(
+            f"Konfigurationsdatei konnte nicht gelesen werden: {path} ({exc})"
+        ) from exc
 
     if not isinstance(raw, dict):
         raise ConfigError("Konfigurationsdatei muss ein TOML-Objekt enthalten.")
@@ -340,23 +349,35 @@ def load_config(path: Path) -> AppConfig:
             log_status_details=_read_optional(healthcheck, "log_status_details", False),
             jitter_seconds=_read_optional(healthcheck, "jitter_seconds", 0.0),
             max_latency_ms=_read_optional(healthcheck, "max_latency_ms", 0.0),
-            expected_version_contains=_clean_required_string(_read_optional(healthcheck, "expected_version_contains", "")),
-            motd_must_contain=_clean_required_string(_read_optional(healthcheck, "motd_must_contain", "")),
-            motd_must_not_contain=_clean_required_string(_read_optional(healthcheck, "motd_must_not_contain", "")),
+            expected_version_contains=_clean_required_string(
+                _read_optional(healthcheck, "expected_version_contains", "")
+            ),
+            motd_must_contain=_clean_required_string(
+                _read_optional(healthcheck, "motd_must_contain", "")
+            ),
+            motd_must_not_contain=_clean_required_string(
+                _read_optional(healthcheck, "motd_must_not_contain", "")
+            ),
             min_players_max=_read_optional(healthcheck, "min_players_max", 0),
         ),
         connection=ConnectionConfig(
             timeout_seconds=_read_required(connection, "connection", "timeout_seconds"),
             buffer_size=_read_required(connection, "connection", "buffer_size"),
             idle_timeout_seconds=_read_optional(connection, "idle_timeout_seconds", 300.0),
-            connect_fallback_on_main_connect_failure=_read_optional(connection, "connect_fallback_on_main_connect_failure", False),
+            connect_fallback_on_main_connect_failure=_read_optional(
+                connection, "connect_fallback_on_main_connect_failure", False
+            ),
             tcp_keepalive=_read_optional(connection, "tcp_keepalive", False),
             max_connections=_read_optional(connection, "max_connections", 4096),
         ),
-        logging=LoggingConfig(level=_clean_required_string(_read_required(logging_cfg, "logging", "level"))),
+        logging=LoggingConfig(
+            level=_clean_required_string(_read_required(logging_cfg, "logging", "level"))
+        ),
         maintenance=MaintenanceConfig(
             mode=_clean_required_string(_read_optional(maintenance, "mode", "auto")),
-            force_fallback_file=_clean_optional_string(_read_optional(maintenance, "force_fallback_file")),
+            force_fallback_file=_clean_optional_string(
+                _read_optional(maintenance, "force_fallback_file")
+            ),
             force_main_file=_clean_optional_string(_read_optional(maintenance, "force_main_file")),
         ),
         proxy_protocol=ProxyProtocolConfig(
@@ -367,7 +388,9 @@ def load_config(path: Path) -> AppConfig:
         ),
         monitoring=MonitoringConfig(
             enabled=_read_optional(monitoring, "enabled", False),
-            listen_host=_clean_required_string(_read_optional(monitoring, "listen_host", "127.0.0.1")),
+            listen_host=_clean_required_string(
+                _read_optional(monitoring, "listen_host", "127.0.0.1")
+            ),
             listen_port=_read_optional(monitoring, "listen_port", 8080),
             allow_remote=_read_optional(monitoring, "allow_remote", False),
         ),
@@ -382,7 +405,9 @@ def validate_config(config: AppConfig) -> None:
 
     def _validate_port(name: str, value: Any) -> None:
         if not _is_int(value) or not (1 <= value <= 65535):
-            raise ConfigError(f"{name} muss ein Integer zwischen 1 und 65535 sein (aktuell: {value!r}).")
+            raise ConfigError(
+                f"{name} muss ein Integer zwischen 1 und 65535 sein (aktuell: {value!r})."
+            )
 
     _validate_port("proxy.listen_port", config.proxy.listen_port)
     _validate_port("main.port", config.main.port)
@@ -396,7 +421,9 @@ def validate_config(config: AppConfig) -> None:
             raise ConfigError(f"{key} muss ein Integer >= 1 sein (aktuell: {value!r}).")
 
     if not _is_int(config.connection.buffer_size) or config.connection.buffer_size < 1024:
-        raise ConfigError(f"connection.buffer_size muss ein Integer >= 1024 sein (aktuell: {config.connection.buffer_size!r}).")
+        raise ConfigError(
+            f"connection.buffer_size muss ein Integer >= 1024 sein (aktuell: {config.connection.buffer_size!r})."
+        )
 
     if not _is_int(config.connection.max_connections) or config.connection.max_connections < 1:
         raise ConfigError("connection.max_connections muss ein Integer >= 1 sein.")
@@ -407,7 +434,10 @@ def validate_config(config: AppConfig) -> None:
     if not isinstance(config.connection.tcp_keepalive, bool):
         raise ConfigError("connection.tcp_keepalive muss bool sein.")
 
-    if not isinstance(config.healthcheck.mode, str) or config.healthcheck.mode not in VALID_HEALTH_CHECK_MODES:
+    if (
+        not isinstance(config.healthcheck.mode, str)
+        or config.healthcheck.mode not in VALID_HEALTH_CHECK_MODES
+    ):
         raise ConfigError("healthcheck.mode muss 'tcp' oder 'minecraft_status' sein.")
 
     for host_name, host_value in (
@@ -416,7 +446,9 @@ def validate_config(config: AppConfig) -> None:
         ("fallback.host", config.fallback.host),
     ):
         if not isinstance(host_value, str) or not host_value.strip():
-            raise ConfigError(f"{host_name} muss ein nicht-leerer String sein (aktuell: {host_value!r}).")
+            raise ConfigError(
+                f"{host_name} muss ein nicht-leerer String sein (aktuell: {host_value!r})."
+            )
 
     for key, value in (
         ("healthcheck.interval_seconds", config.healthcheck.interval_seconds),
@@ -425,19 +457,40 @@ def validate_config(config: AppConfig) -> None:
         ("connection.idle_timeout_seconds", config.connection.idle_timeout_seconds),
     ):
         min_allowed = 0 if key == "connection.idle_timeout_seconds" else 0
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < min_allowed or (
-            key != "connection.idle_timeout_seconds" and value <= 0
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or value < min_allowed
+            or (key != "connection.idle_timeout_seconds" and value <= 0)
         ):
             raise ConfigError(f"{key} muss int oder float und > 0 sein (aktuell: {value!r}).")
 
-    if isinstance(config.healthcheck.min_recovery_seconds, bool) or not isinstance(config.healthcheck.min_recovery_seconds, (int, float)) or config.healthcheck.min_recovery_seconds < 0:
-        raise ConfigError(f"healthcheck.min_recovery_seconds muss int oder float und >= 0 sein (aktuell: {config.healthcheck.min_recovery_seconds!r}).")
+    if (
+        isinstance(config.healthcheck.min_recovery_seconds, bool)
+        or not isinstance(config.healthcheck.min_recovery_seconds, (int, float))
+        or config.healthcheck.min_recovery_seconds < 0
+    ):
+        raise ConfigError(
+            f"healthcheck.min_recovery_seconds muss int oder float und >= 0 sein (aktuell: {config.healthcheck.min_recovery_seconds!r})."
+        )
 
-    if isinstance(config.healthcheck.jitter_seconds, bool) or not isinstance(config.healthcheck.jitter_seconds, (int, float)) or config.healthcheck.jitter_seconds < 0:
-        raise ConfigError(f"healthcheck.jitter_seconds muss int oder float und >= 0 sein (aktuell: {config.healthcheck.jitter_seconds!r}).")
+    if (
+        isinstance(config.healthcheck.jitter_seconds, bool)
+        or not isinstance(config.healthcheck.jitter_seconds, (int, float))
+        or config.healthcheck.jitter_seconds < 0
+    ):
+        raise ConfigError(
+            f"healthcheck.jitter_seconds muss int oder float und >= 0 sein (aktuell: {config.healthcheck.jitter_seconds!r})."
+        )
 
-    if isinstance(config.healthcheck.max_latency_ms, bool) or not isinstance(config.healthcheck.max_latency_ms, (int, float)) or config.healthcheck.max_latency_ms < 0:
-        raise ConfigError(f"healthcheck.max_latency_ms muss int oder float und >= 0 sein (aktuell: {config.healthcheck.max_latency_ms!r}).")
+    if (
+        isinstance(config.healthcheck.max_latency_ms, bool)
+        or not isinstance(config.healthcheck.max_latency_ms, (int, float))
+        or config.healthcheck.max_latency_ms < 0
+    ):
+        raise ConfigError(
+            f"healthcheck.max_latency_ms muss int oder float und >= 0 sein (aktuell: {config.healthcheck.max_latency_ms!r})."
+        )
     for key, value in (
         ("healthcheck.expected_version_contains", config.healthcheck.expected_version_contains),
         ("healthcheck.motd_must_contain", config.healthcheck.motd_must_contain),
@@ -446,21 +499,33 @@ def validate_config(config: AppConfig) -> None:
         if not isinstance(value, str):
             raise ConfigError(f"{key} muss ein String sein (aktuell: {value!r}).")
     if not _is_int(config.healthcheck.min_players_max) or config.healthcheck.min_players_max < 0:
-        raise ConfigError(f"healthcheck.min_players_max muss ein Integer >= 0 sein (aktuell: {config.healthcheck.min_players_max!r}).")
+        raise ConfigError(
+            f"healthcheck.min_players_max muss ein Integer >= 0 sein (aktuell: {config.healthcheck.min_players_max!r})."
+        )
     if (
         config.healthcheck.expected_version_contains
         or config.healthcheck.motd_must_contain
         or config.healthcheck.motd_must_not_contain
         or config.healthcheck.min_players_max > 0
     ) and not config.healthcheck.require_valid_json:
-        raise ConfigError("healthcheck.require_valid_json muss true sein, wenn JSON-basierte minecraft_status Filter gesetzt sind.")
+        raise ConfigError(
+            "healthcheck.require_valid_json muss true sein, wenn JSON-basierte minecraft_status Filter gesetzt sind."
+        )
 
-    if not isinstance(config.logging.level, str) or config.logging.level.upper() not in VALID_LOG_LEVELS:
+    if (
+        not isinstance(config.logging.level, str)
+        or config.logging.level.upper() not in VALID_LOG_LEVELS
+    ):
         raise ConfigError("logging.level muss DEBUG, INFO, WARNING, ERROR oder CRITICAL sein.")
 
     if config.healthcheck.target_host is not None:
-        if not isinstance(config.healthcheck.target_host, str) or not config.healthcheck.target_host.strip():
-            raise ConfigError("healthcheck.target_host muss ein nicht-leerer String sein, falls gesetzt.")
+        if (
+            not isinstance(config.healthcheck.target_host, str)
+            or not config.healthcheck.target_host.strip()
+        ):
+            raise ConfigError(
+                "healthcheck.target_host muss ein nicht-leerer String sein, falls gesetzt."
+            )
 
     if config.healthcheck.target_port is not None:
         _validate_port("healthcheck.target_port", config.healthcheck.target_port)
@@ -469,37 +534,64 @@ def validate_config(config: AppConfig) -> None:
         raise ConfigError("healthcheck.protocol_version muss ein Integer >= 1 sein.")
 
     if config.healthcheck.status_hostname is not None:
-        if not isinstance(config.healthcheck.status_hostname, str) or not config.healthcheck.status_hostname.strip():
-            raise ConfigError("healthcheck.status_hostname muss ein nicht-leerer String sein, falls gesetzt.")
+        if (
+            not isinstance(config.healthcheck.status_hostname, str)
+            or not config.healthcheck.status_hostname.strip()
+        ):
+            raise ConfigError(
+                "healthcheck.status_hostname muss ein nicht-leerer String sein, falls gesetzt."
+            )
 
     if not isinstance(config.healthcheck.require_valid_json, bool):
         raise ConfigError("healthcheck.require_valid_json muss bool sein.")
 
     if not isinstance(config.healthcheck.log_status_details, bool):
         raise ConfigError("healthcheck.log_status_details muss bool sein.")
-    if not isinstance(config.maintenance.mode, str) or config.maintenance.mode not in {"auto", "force_fallback", "force_main"}:
+    if not isinstance(config.maintenance.mode, str) or config.maintenance.mode not in {
+        "auto",
+        "force_fallback",
+        "force_main",
+    }:
         raise ConfigError("maintenance.mode muss 'auto', 'force_fallback' oder 'force_main' sein.")
     if config.maintenance.force_fallback_file is not None:
-        if not isinstance(config.maintenance.force_fallback_file, str) or not config.maintenance.force_fallback_file.strip():
-            raise ConfigError("maintenance.force_fallback_file muss ein nicht-leerer String sein, falls gesetzt.")
+        if (
+            not isinstance(config.maintenance.force_fallback_file, str)
+            or not config.maintenance.force_fallback_file.strip()
+        ):
+            raise ConfigError(
+                "maintenance.force_fallback_file muss ein nicht-leerer String sein, falls gesetzt."
+            )
     if config.maintenance.force_main_file is not None:
-        if not isinstance(config.maintenance.force_main_file, str) or not config.maintenance.force_main_file.strip():
-            raise ConfigError("maintenance.force_main_file muss ein nicht-leerer String sein, falls gesetzt.")
+        if (
+            not isinstance(config.maintenance.force_main_file, str)
+            or not config.maintenance.force_main_file.strip()
+        ):
+            raise ConfigError(
+                "maintenance.force_main_file muss ein nicht-leerer String sein, falls gesetzt."
+            )
     if not isinstance(config.proxy_protocol.accept, bool):
         raise ConfigError("proxy_protocol.accept muss bool sein.")
     if not isinstance(config.proxy_protocol.send, bool):
         raise ConfigError("proxy_protocol.send muss bool sein.")
     if not _is_int(config.proxy_protocol.version) or config.proxy_protocol.version != 1:
-        raise ConfigError("proxy_protocol.version muss 1 sein (nur PROXY protocol v1 wird unterstützt).")
+        raise ConfigError(
+            "proxy_protocol.version muss 1 sein (nur PROXY protocol v1 wird unterstützt)."
+        )
     if not isinstance(config.proxy_protocol.trusted_proxy_ips, tuple):
-        raise ConfigError("proxy_protocol.trusted_proxy_ips muss eine Liste von IP/CIDR-Strings sein.")
+        raise ConfigError(
+            "proxy_protocol.trusted_proxy_ips muss eine Liste von IP/CIDR-Strings sein."
+        )
     for entry in config.proxy_protocol.trusted_proxy_ips:
         if not isinstance(entry, str) or not entry.strip():
-            raise ConfigError("proxy_protocol.trusted_proxy_ips darf nur nicht-leere Strings enthalten.")
+            raise ConfigError(
+                "proxy_protocol.trusted_proxy_ips darf nur nicht-leere Strings enthalten."
+            )
         try:
             ipaddress.ip_network(entry.strip(), strict=False)
         except ValueError as exc:
-            raise ConfigError(f"Ungültiger proxy_protocol.trusted_proxy_ips Eintrag: {entry!r}") from exc
+            raise ConfigError(
+                f"Ungültiger proxy_protocol.trusted_proxy_ips Eintrag: {entry!r}"
+            ) from exc
 
     def _normalize_host(host: str) -> str:
         return host.strip().lower()
@@ -509,7 +601,9 @@ def validate_config(config: AppConfig) -> None:
     loopback_or_any_v6 = {"::1", "localhost", "::"}
     listen_host = _normalize_host(config.proxy.listen_host)
 
-    def _validate_loop(name: str, target: TargetConfig, *, healthcheck_target: bool = False) -> None:
+    def _validate_loop(
+        name: str, target: TargetConfig, *, healthcheck_target: bool = False
+    ) -> None:
         normalized_target_host = _normalize_host(target.host)
         loop_text = "Healthcheck-Ziel erzeugt" if healthcheck_target else f"{name} erzeugt"
         if (normalized_target_host, target.port) == (listen_host, config.proxy.listen_port):
@@ -519,7 +613,9 @@ def validate_config(config: AppConfig) -> None:
         if listen_host in loopback_hosts_v4 and normalized_target_host in loopback_hosts_v4:
             raise ConfigError(f"{loop_text} auf Loopback denselben Port wie der Listener.")
         if listen_host == "0.0.0.0" and normalized_target_host in loopback_or_any_v4:
-            raise ConfigError(f"{loop_text} bei LISTEN_HOST=0.0.0.0 wahrscheinlich eine Proxy-Schleife.")
+            raise ConfigError(
+                f"{loop_text} bei LISTEN_HOST=0.0.0.0 wahrscheinlich eine Proxy-Schleife."
+            )
         if listen_host == "::" and normalized_target_host in loopback_or_any_v6:
             raise ConfigError(f"{loop_text} bei LISTEN_HOST=:: wahrscheinlich eine Proxy-Schleife.")
 
@@ -528,19 +624,24 @@ def validate_config(config: AppConfig) -> None:
     _validate_loop("HEALTHCHECK", get_healthcheck_target(config), healthcheck_target=True)
     if not isinstance(config.monitoring.enabled, bool):
         raise ConfigError("monitoring.enabled muss bool sein.")
-    if not isinstance(config.monitoring.listen_host, str) or not config.monitoring.listen_host.strip():
+    if (
+        not isinstance(config.monitoring.listen_host, str)
+        or not config.monitoring.listen_host.strip()
+    ):
         raise ConfigError("monitoring.listen_host muss ein nicht-leerer String sein.")
     _validate_port("monitoring.listen_port", config.monitoring.listen_port)
     if not isinstance(config.monitoring.allow_remote, bool):
         raise ConfigError("monitoring.allow_remote muss bool sein.")
     local_monitor_hosts = {"127.0.0.1", "localhost", "::1"}
     monitor_host = _normalize_host(config.monitoring.listen_host)
-    if config.monitoring.enabled and monitor_host not in local_monitor_hosts and not config.monitoring.allow_remote:
+    if (
+        config.monitoring.enabled
+        and monitor_host not in local_monitor_hosts
+        and not config.monitoring.allow_remote
+    ):
         raise ConfigError(
             "monitoring.listen_host ist nicht lokal. Setze monitoring.allow_remote=true, wenn ein Remote-Bind gewünscht ist."
         )
-
-
 
 
 def extract_motd_text(description: Any) -> str:
@@ -568,6 +669,7 @@ def _format_motd_for_log(motd_text: Optional[str], limit: int = 120) -> str:
         return normalized[: limit - 3] + "..."
     return normalized
 
+
 def get_healthcheck_target(config: AppConfig) -> TargetConfig:
     host = config.healthcheck.target_host or config.main.host
     port = config.healthcheck.target_port or config.main.port
@@ -594,8 +696,6 @@ def set_tcp_nodelay(writer: Optional[asyncio.StreamWriter]) -> None:
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     except OSError as exc:
         log.debug("TCP_NODELAY konnte nicht gesetzt werden: %s", exc)
-
-
 
 
 def set_tcp_keepalive(writer: Optional[asyncio.StreamWriter]) -> None:
@@ -657,7 +757,9 @@ async def read_proxy_v1_header(reader: asyncio.StreamReader, timeout: float) -> 
     return parse_proxy_v1_header(line)
 
 
-def build_proxy_v1_header(source_ip: str, destination_ip: str, source_port: int, destination_port: int) -> bytes:
+def build_proxy_v1_header(
+    source_ip: str, destination_ip: str, source_port: int, destination_port: int
+) -> bytes:
     src = ipaddress.ip_address(source_ip)
     dst = ipaddress.ip_address(destination_ip)
     if src.version != dst.version:
@@ -743,7 +845,9 @@ async def minecraft_status_health_check(
     writer = None
     started = time.monotonic()
     try:
-        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port), timeout=timeout
+        )
         handshake_host = status_hostname or host
         writer.write(make_minecraft_status_packet(handshake_host, port, protocol_version))
         await asyncio.wait_for(writer.drain(), timeout=timeout)
@@ -802,14 +906,48 @@ async def minecraft_status_health_check(
             if isinstance(maximum, int):
                 players_max = maximum
 
-        if expected_version_contains and (not version_name or expected_version_contains not in version_name):
-            return HealthCheckResult(False, "version_mismatch", latency_ms, version_name, players_online, players_max, motd_text)
+        if expected_version_contains and (
+            not version_name or expected_version_contains not in version_name
+        ):
+            return HealthCheckResult(
+                False,
+                "version_mismatch",
+                latency_ms,
+                version_name,
+                players_online,
+                players_max,
+                motd_text,
+            )
         if motd_must_contain and motd_must_contain not in motd_text:
-            return HealthCheckResult(False, "motd_missing_required_text", latency_ms, version_name, players_online, players_max, motd_text)
+            return HealthCheckResult(
+                False,
+                "motd_missing_required_text",
+                latency_ms,
+                version_name,
+                players_online,
+                players_max,
+                motd_text,
+            )
         if motd_must_not_contain and motd_must_not_contain in motd_text:
-            return HealthCheckResult(False, "motd_contains_forbidden_text", latency_ms, version_name, players_online, players_max, motd_text)
+            return HealthCheckResult(
+                False,
+                "motd_contains_forbidden_text",
+                latency_ms,
+                version_name,
+                players_online,
+                players_max,
+                motd_text,
+            )
         if min_players_max > 0 and (players_max is None or players_max < min_players_max):
-            return HealthCheckResult(False, "players_max_too_low", latency_ms, version_name, players_online, players_max, motd_text)
+            return HealthCheckResult(
+                False,
+                "players_max_too_low",
+                latency_ms,
+                version_name,
+                players_online,
+                players_max,
+                motd_text,
+            )
 
         return HealthCheckResult(
             ok=True,
@@ -820,8 +958,21 @@ async def minecraft_status_health_check(
             players_max=players_max,
             motd_text=motd_text,
         )
-    except (asyncio.TimeoutError, ConnectionError, OSError, asyncio.IncompleteReadError, ValueError, json.JSONDecodeError) as exc:
-        log.debug("Minecraft-Status-Healthcheck fehlgeschlagen für %s:%s: %s", host, port, exc, exc_info=True)
+    except (
+        asyncio.TimeoutError,
+        ConnectionError,
+        OSError,
+        asyncio.IncompleteReadError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
+        log.debug(
+            "Minecraft-Status-Healthcheck fehlgeschlagen für %s:%s: %s",
+            host,
+            port,
+            exc,
+            exc_info=True,
+        )
         return HealthCheckResult(ok=False, reason=f"status_check_failed: {exc.__class__.__name__}")
     finally:
         await close_writer(writer)
@@ -855,7 +1006,10 @@ def get_effective_maintenance_mode(config: AppConfig) -> tuple[str, str]:
         return "force_fallback", "config"
     if config.maintenance.mode == "force_main":
         return "force_main", "config"
-    if config.maintenance.force_fallback_file and Path(config.maintenance.force_fallback_file).exists():
+    if (
+        config.maintenance.force_fallback_file
+        and Path(config.maintenance.force_fallback_file).exists()
+    ):
         return "force_fallback", "force_fallback_file"
     if config.maintenance.force_main_file and Path(config.maintenance.force_main_file).exists():
         return "force_main", "force_main_file"
@@ -866,7 +1020,9 @@ def choose_target_decision(config: AppConfig, health: HealthState) -> TargetDeci
     mode, source = get_effective_maintenance_mode(config)
     if mode == "force_fallback":
         reason = "force_fallback_config" if source == "config" else "force_fallback_file"
-        return TargetDecision(Target("FALLBACK", config.fallback.host, config.fallback.port), reason, mode)
+        return TargetDecision(
+            Target("FALLBACK", config.fallback.host, config.fallback.port), reason, mode
+        )
     if mode == "force_main":
         reason = "force_main_config" if source == "config" else "force_main_file"
         return TargetDecision(Target("MAIN", config.main.host, config.main.port), reason, mode)
@@ -876,11 +1032,19 @@ def choose_target_decision(config: AppConfig, health: HealthState) -> TargetDeci
     return TargetDecision(Target(name=name, host=current.host, port=current.port), reason, mode)
 
 
-async def pipe(source: asyncio.StreamReader, destination: asyncio.StreamWriter, direction_name: str, buffer_size: int, idle_timeout_seconds: float) -> None:
+async def pipe(
+    source: asyncio.StreamReader,
+    destination: asyncio.StreamWriter,
+    direction_name: str,
+    buffer_size: int,
+    idle_timeout_seconds: float,
+) -> None:
     try:
         while True:
             if idle_timeout_seconds > 0:
-                data = await asyncio.wait_for(source.read(buffer_size), timeout=idle_timeout_seconds)
+                data = await asyncio.wait_for(
+                    source.read(buffer_size), timeout=idle_timeout_seconds
+                )
             else:
                 data = await source.read(buffer_size)
             if not data:
@@ -943,20 +1107,34 @@ async def handle_client(
         update_runtime_routing_state(runtime_state, target.name, decision.reason)
         if config.proxy_protocol.accept:
             if not peer_ip:
-                log.warning("PROXY protocol rejected: peer IP konnte nicht bestimmt werden (%s)", peer)
+                log.warning(
+                    "PROXY protocol rejected: peer IP konnte nicht bestimmt werden (%s)", peer
+                )
                 return
             if not is_trusted_proxy(peer_ip, config.proxy_protocol.trusted_proxy_ips):
                 log.warning("PROXY protocol rejected from untrusted peer %s", peer_ip)
                 return
             try:
-                inbound_proxy_info = await read_proxy_v1_header(client_reader, config.connection.timeout_seconds)
+                inbound_proxy_info = await read_proxy_v1_header(
+                    client_reader, config.connection.timeout_seconds
+                )
             except Exception as exc:
-                log.warning("PROXY protocol header invalid from %s: %s", peer, exc.__class__.__name__)
+                log.warning(
+                    "PROXY protocol header invalid from %s: %s", peer, exc.__class__.__name__
+                )
                 return
-        log.info("Neue Verbindung von %s -> %s %s:%s reason=%s", peer, target.name, target.host, target.port, decision.reason)
+        log.info(
+            "Neue Verbindung von %s -> %s %s:%s reason=%s",
+            peer,
+            target.name,
+            target.host,
+            target.port,
+            decision.reason,
+        )
         try:
             server_reader, server_writer = await asyncio.wait_for(
-                asyncio.open_connection(target.host, target.port), timeout=config.connection.timeout_seconds
+                asyncio.open_connection(target.host, target.port),
+                timeout=config.connection.timeout_seconds,
             )
         except Exception as main_exc:
             if target.name == "MAIN" and config.connection.connect_fallback_on_main_connect_failure:
@@ -972,10 +1150,13 @@ async def handle_client(
                 )
                 try:
                     server_reader, server_writer = await asyncio.wait_for(
-                        asyncio.open_connection(fb.host, fb.port), timeout=config.connection.timeout_seconds
+                        asyncio.open_connection(fb.host, fb.port),
+                        timeout=config.connection.timeout_seconds,
                     )
                     target = fb
-                    update_runtime_routing_state(runtime_state, "FALLBACK", "main_connect_failed_fallback_connect")
+                    update_runtime_routing_state(
+                        runtime_state, "FALLBACK", "main_connect_failed_fallback_connect"
+                    )
                 except Exception as fallback_exc:
                     log.error(
                         "MAIN connect fehlgeschlagen und FALLBACK connect ebenfalls fehlgeschlagen für %s (%s:%s, %s)",
@@ -995,8 +1176,14 @@ async def handle_client(
         if config.proxy_protocol.send:
             backend_peer = server_writer.get_extra_info("peername")
             try:
-                backend_ip = backend_peer[0] if isinstance(backend_peer, tuple) and backend_peer else None
-                backend_port = backend_peer[1] if isinstance(backend_peer, tuple) and len(backend_peer) > 1 else 0
+                backend_ip = (
+                    backend_peer[0] if isinstance(backend_peer, tuple) and backend_peer else None
+                )
+                backend_port = (
+                    backend_peer[1]
+                    if isinstance(backend_peer, tuple) and len(backend_peer) > 1
+                    else 0
+                )
                 if inbound_proxy_info and inbound_proxy_info.family != "UNKNOWN":
                     src_ip = inbound_proxy_info.source_ip
                     src_port = inbound_proxy_info.source_port
@@ -1010,23 +1197,47 @@ async def handle_client(
                     server_writer.write(build_proxy_unknown_header())
                 else:
                     try:
-                        server_writer.write(build_proxy_v1_header(src_ip, backend_ip, src_port, backend_port))
+                        server_writer.write(
+                            build_proxy_v1_header(src_ip, backend_ip, src_port, backend_port)
+                        )
                     except ValueError as exc:
-                        log.warning("PROXY family mismatch/invalid data (%s), sende PROXY UNKNOWN zu %s", exc, target.name)
+                        log.warning(
+                            "PROXY family mismatch/invalid data (%s), sende PROXY UNKNOWN zu %s",
+                            exc,
+                            target.name,
+                        )
                         server_writer.write(build_proxy_unknown_header())
                 await server_writer.drain()
             except Exception as exc:
                 log.error("Senden von PROXY protocol fehlgeschlagen: %s", exc)
                 raise
-        c2s = asyncio.create_task(pipe(client_reader, server_writer, "client -> server", config.connection.buffer_size, config.connection.idle_timeout_seconds))
-        s2c = asyncio.create_task(pipe(server_reader, client_writer, "server -> client", config.connection.buffer_size, config.connection.idle_timeout_seconds))
+        c2s = asyncio.create_task(
+            pipe(
+                client_reader,
+                server_writer,
+                "client -> server",
+                config.connection.buffer_size,
+                config.connection.idle_timeout_seconds,
+            )
+        )
+        s2c = asyncio.create_task(
+            pipe(
+                server_reader,
+                client_writer,
+                "server -> client",
+                config.connection.buffer_size,
+                config.connection.idle_timeout_seconds,
+            )
+        )
         done, pending = await asyncio.wait({c2s, s2c}, return_when=asyncio.FIRST_COMPLETED)
         for task in pending:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
         await asyncio.gather(*done, return_exceptions=True)
     except Exception as exc:
-        log.error("Konnte nicht zu %s %s:%s verbinden: %s", target.name, target.host, target.port, exc)
+        log.error(
+            "Konnte nicht zu %s %s:%s verbinden: %s", target.name, target.host, target.port, exc
+        )
     finally:
         await close_writer(server_writer)
         await close_writer(client_writer)
@@ -1036,7 +1247,14 @@ async def handle_client(
 
 
 def text_response(status: int, body: str, content_type: str) -> bytes:
-    reason = {200: "OK", 404: "Not Found", 405: "Method Not Allowed", 400: "Bad Request", 408: "Request Timeout", 503: "Service Unavailable"}.get(status, "OK")
+    reason = {
+        200: "OK",
+        404: "Not Found",
+        405: "Method Not Allowed",
+        400: "Bad Request",
+        408: "Request Timeout",
+        503: "Service Unavailable",
+    }.get(status, "OK")
     encoded = body.encode("utf-8")
     return (
         f"HTTP/1.1 {status} {reason}\r\n"
@@ -1047,16 +1265,22 @@ def text_response(status: int, body: str, content_type: str) -> bytes:
 
 
 def json_response(status: int, payload: dict[str, Any]) -> bytes:
-    return text_response(status, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8")
+    return text_response(
+        status, json.dumps(payload, ensure_ascii=False), "application/json; charset=utf-8"
+    )
 
 
-def refresh_runtime_routing_state(config: AppConfig, health: HealthState, runtime_state: RuntimeState) -> TargetDecision:
+def refresh_runtime_routing_state(
+    config: AppConfig, health: HealthState, runtime_state: RuntimeState
+) -> TargetDecision:
     decision = choose_target_decision(config, health)
     update_runtime_routing_state(runtime_state, decision.target.name, decision.reason)
     return decision
 
 
-def build_state_payload(config: AppConfig, health: HealthState, runtime_state: RuntimeState) -> dict[str, Any]:
+def build_state_payload(
+    config: AppConfig, health: HealthState, runtime_state: RuntimeState
+) -> dict[str, Any]:
     uptime = max(0.0, time.monotonic() - runtime_state.started_at)
     decision = refresh_runtime_routing_state(config, health, runtime_state)
     return {
@@ -1075,11 +1299,15 @@ def build_state_payload(config: AppConfig, health: HealthState, runtime_state: R
         "health_successes": health.successes,
         "health_failures": health.failures,
         "last_health_check_at": runtime_state.last_health_check_at,
-        "last_health_result": asdict(runtime_state.last_health_result) if runtime_state.last_health_result else None,
+        "last_health_result": (
+            asdict(runtime_state.last_health_result) if runtime_state.last_health_result else None
+        ),
     }
 
 
-async def health_loop(config: AppConfig, health: HealthState, runtime_state: RuntimeState, stop_event: asyncio.Event) -> None:
+async def health_loop(
+    config: AppConfig, health: HealthState, runtime_state: RuntimeState, stop_event: asyncio.Event
+) -> None:
     target = get_healthcheck_target(config)
     log.info("Healthcheck gestartet (%s): %s:%s", config.healthcheck.mode, target.host, target.port)
     last_recovery_log_at: Optional[float] = None
@@ -1096,7 +1324,7 @@ async def health_loop(config: AppConfig, health: HealthState, runtime_state: Run
                 update_runtime_routing_state(runtime_state, decision.target.name, decision.reason)
             if config.healthcheck.log_status_details and result.ok:
                 log.info(
-                    "Healthcheck ok (%s): latency=%.1fms version=%s players=%s/%s motd=\"%s\" reason=%s",
+                    'Healthcheck ok (%s): latency=%.1fms version=%s players=%s/%s motd="%s" reason=%s',
                     config.healthcheck.mode,
                     result.latency_ms if result.latency_ms is not None else -1,
                     result.version_name or "n/a",
@@ -1134,7 +1362,10 @@ async def health_loop(config: AppConfig, health: HealthState, runtime_state: Run
                     )
                     last_recovery_log_at = now
             elif was_recovering and not result.ok:
-                log.info("MAIN-Recovery wurde durch fehlgeschlagenen Healthcheck zurückgesetzt: %s", result.reason)
+                log.info(
+                    "MAIN-Recovery wurde durch fehlgeschlagenen Healthcheck zurückgesetzt: %s",
+                    result.reason,
+                )
                 was_recovering = False
                 last_recovery_log_at = None
             elif was_recovering and not health.is_recovering(now=now):
@@ -1148,14 +1379,24 @@ async def health_loop(config: AppConfig, health: HealthState, runtime_state: Run
         except Exception as exc:
             log.exception("Unerwarteter Fehler im Healthcheck-Loop: %s", exc)
         try:
-            jitter = random.uniform(0, config.healthcheck.jitter_seconds) if config.healthcheck.jitter_seconds > 0 else 0.0
-            await asyncio.wait_for(stop_event.wait(), timeout=config.healthcheck.interval_seconds + jitter)
+            jitter = (
+                random.uniform(0, config.healthcheck.jitter_seconds)
+                if config.healthcheck.jitter_seconds > 0
+                else 0.0
+            )
+            await asyncio.wait_for(
+                stop_event.wait(), timeout=config.healthcheck.interval_seconds + jitter
+            )
         except asyncio.TimeoutError:
             pass
 
 
 async def handle_monitoring_client(
-    reader: asyncio.StreamReader, writer: asyncio.StreamWriter, config: AppConfig, health: HealthState, runtime_state: RuntimeState
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    config: AppConfig,
+    health: HealthState,
+    runtime_state: RuntimeState,
 ) -> None:
     try:
         line = await asyncio.wait_for(reader.readline(), timeout=HTTP_READ_TIMEOUT_SECONDS)
@@ -1266,12 +1507,30 @@ async def start_monitoring_server(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Minecraft TCP Failover Proxy")
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Pfad zur TOML-Konfiguration")
-    parser.add_argument("--check-config", action="store_true", help="Konfiguration laden/validieren und beenden.")
-    parser.add_argument("--test-main", action="store_true", help="TCP-Erreichbarkeit von [main] testen und beenden.")
-    parser.add_argument("--test-fallback", action="store_true", help="TCP-Erreichbarkeit von [fallback] testen und beenden.")
-    parser.add_argument("--test-healthcheck", action="store_true", help="Konfigurierten Healthcheck ausführen und beenden.")
-    parser.add_argument("--print-effective-config", action="store_true", help="Effektive Konfiguration als JSON ausgeben und beenden.")
+    parser.add_argument(
+        "--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Pfad zur TOML-Konfiguration"
+    )
+    parser.add_argument(
+        "--check-config", action="store_true", help="Konfiguration laden/validieren und beenden."
+    )
+    parser.add_argument(
+        "--test-main", action="store_true", help="TCP-Erreichbarkeit von [main] testen und beenden."
+    )
+    parser.add_argument(
+        "--test-fallback",
+        action="store_true",
+        help="TCP-Erreichbarkeit von [fallback] testen und beenden.",
+    )
+    parser.add_argument(
+        "--test-healthcheck",
+        action="store_true",
+        help="Konfigurierten Healthcheck ausführen und beenden.",
+    )
+    parser.add_argument(
+        "--print-effective-config",
+        action="store_true",
+        help="Effektive Konfiguration als JSON ausgeben und beenden.",
+    )
     return parser.parse_args()
 
 
@@ -1296,13 +1555,22 @@ async def test_target_tcp(name: str, target: TargetConfig, timeout: float) -> He
         latency = f"{result.latency_ms:.1f}" if result.latency_ms is not None else "n/a"
         print(f"OK: {name} erreichbar {target.host}:{target.port} latency={latency}ms")
     else:
-        print(f"FEHLER: {name} nicht erreichbar {target.host}:{target.port} reason={result.reason}", file=sys.stderr)
+        print(
+            f"FEHLER: {name} nicht erreichbar {target.host}:{target.port} reason={result.reason}",
+            file=sys.stderr,
+        )
     return result
 
 
 async def run_cli_checks(args: argparse.Namespace, config: AppConfig) -> int:
     checks_requested = any(
-        [args.check_config, args.print_effective_config, args.test_main, args.test_fallback, args.test_healthcheck]
+        [
+            args.check_config,
+            args.print_effective_config,
+            args.test_main,
+            args.test_fallback,
+            args.test_healthcheck,
+        ]
     )
     if not checks_requested:
         return -1
@@ -1315,10 +1583,14 @@ async def run_cli_checks(args: argparse.Namespace, config: AppConfig) -> int:
         print(json.dumps(config_to_dict(config), indent=2, sort_keys=True))
 
     if args.test_main:
-        success = (await test_target_tcp("MAIN", config.main, config.connection.timeout_seconds)).ok and success
+        success = (
+            await test_target_tcp("MAIN", config.main, config.connection.timeout_seconds)
+        ).ok and success
 
     if args.test_fallback:
-        success = (await test_target_tcp("FALLBACK", config.fallback, config.connection.timeout_seconds)).ok and success
+        success = (
+            await test_target_tcp("FALLBACK", config.fallback, config.connection.timeout_seconds)
+        ).ok and success
 
     if args.test_healthcheck:
         target = get_healthcheck_target(config)
@@ -1357,7 +1629,11 @@ async def run() -> int:
         return cli_result
 
     setup_logging(config.logging.level)
-    health = HealthState(config.healthcheck.fail_after, config.healthcheck.recover_after, config.healthcheck.min_recovery_seconds)
+    health = HealthState(
+        config.healthcheck.fail_after,
+        config.healthcheck.recover_after,
+        config.healthcheck.min_recovery_seconds,
+    )
     runtime_state = RuntimeState(started_at=time.monotonic())
 
     stop_event = asyncio.Event()
@@ -1374,7 +1650,9 @@ async def run() -> int:
     runtime_state.last_health_result = initial_result
     runtime_state.last_health_check_at = time.monotonic()
     initial_decision = choose_target_decision(config, health)
-    update_runtime_routing_state(runtime_state, initial_decision.target.name, initial_decision.reason)
+    update_runtime_routing_state(
+        runtime_state, initial_decision.target.name, initial_decision.reason
+    )
     health_target = get_healthcheck_target(config)
 
     log.info(
@@ -1392,7 +1670,9 @@ async def run() -> int:
     if health.main_healthy:
         log.info("Startzustand: MAIN ist erreichbar (%s).", initial_result.reason)
     else:
-        log.warning("Startzustand: MAIN ist nicht erreichbar (%s). Fallback aktiv.", initial_result.reason)
+        log.warning(
+            "Startzustand: MAIN ist nicht erreichbar (%s). Fallback aktiv.", initial_result.reason
+        )
 
     try:
         server = await asyncio.start_server(
@@ -1413,7 +1693,12 @@ async def run() -> int:
     try:
         monitoring_server = await start_monitoring_server(config, health, runtime_state, stop_event)
     except OSError as exc:
-        log.error("Konnte Monitoring-Listener nicht starten auf %s:%s: %s", config.monitoring.listen_host, config.monitoring.listen_port, exc)
+        log.error(
+            "Konnte Monitoring-Listener nicht starten auf %s:%s: %s",
+            config.monitoring.listen_host,
+            config.monitoring.listen_port,
+            exc,
+        )
         server.close()
         await server.wait_closed()
         return 1
