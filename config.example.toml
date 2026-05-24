@@ -102,8 +102,13 @@ level = "INFO"
 # WARNING: Enable only if you know what you are doing.
 # accept=true should only be used behind trusted HAProxy/reverse proxies.
 # Always set trusted_proxy_ips when accept=true.
-# send=true only if the upstream server expects PROXY protocol v1.
+# send=true only if the upstream server expects PROXY protocol.
+# version: compatibility default for accept/send (1 or 2).
+# accept_version/send_version override version per direction (optional).
+# Only set accept_version/send_version if you intentionally want different versions per direction.
 accept = false
 send = false
 version = 1
+# accept_version = 2
+# send_version = 2
 trusted_proxy_ips = []

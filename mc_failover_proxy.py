@@ -7,6 +7,7 @@ import logging
 import random
 import signal
 import socket
+import struct
 import sys
 import time
 from dataclasses import asdict, dataclass, is_dataclass
@@ -30,6 +31,8 @@ MAX_HTTP_HEADER_LINES = 64
 MAX_HTTP_HEADER_BYTES = 16384
 HTTP_READ_TIMEOUT_SECONDS = 2.0
 MAX_PROXY_V1_HEADER_BYTES = 256
+PROXY_V2_SIGNATURE = b"\r\n\r\n\x00\r\nQUIT\n"
+MAX_PROXY_V2_HEADER_BYTES = 65535 + 16
 
 log = logging.getLogger("mc-failover")
 
@@ -110,6 +113,8 @@ class ProxyProtocolConfig:
     accept: bool
     send: bool
     version: int
+    accept_version: Optional[int]
+    send_version: Optional[int]
     trusted_proxy_ips: tuple[str, ...]
 
 
@@ -384,6 +389,8 @@ def load_config(path: Path) -> AppConfig:
             accept=_read_optional(proxy_protocol, "accept", False),
             send=_read_optional(proxy_protocol, "send", False),
             version=_read_optional(proxy_protocol, "version", 1),
+            accept_version=_read_optional(proxy_protocol, "accept_version"),
+            send_version=_read_optional(proxy_protocol, "send_version"),
             trusted_proxy_ips=tuple(_read_optional(proxy_protocol, "trusted_proxy_ips", [])),
         ),
         monitoring=MonitoringConfig(
@@ -576,10 +583,16 @@ def validate_config(config: AppConfig) -> None:
         raise ConfigError("proxy_protocol.accept muss bool sein.")
     if not isinstance(config.proxy_protocol.send, bool):
         raise ConfigError("proxy_protocol.send muss bool sein.")
-    if not _is_int(config.proxy_protocol.version) or config.proxy_protocol.version != 1:
-        raise ConfigError(
-            "proxy_protocol.version muss 1 sein (nur PROXY protocol v1 wird unterstützt)."
-        )
+    if not _is_int(config.proxy_protocol.version) or config.proxy_protocol.version not in {1, 2}:
+        raise ConfigError("proxy_protocol.version muss 1 oder 2 sein.")
+    for field_name, version_value in (
+        ("proxy_protocol.accept_version", config.proxy_protocol.accept_version),
+        ("proxy_protocol.send_version", config.proxy_protocol.send_version),
+    ):
+        if version_value is None:
+            continue
+        if not _is_int(version_value) or version_value not in {1, 2}:
+            raise ConfigError(f"{field_name} muss 1 oder 2 sein.")
     if not isinstance(config.proxy_protocol.trusted_proxy_ips, tuple):
         raise ConfigError(
             "proxy_protocol.trusted_proxy_ips muss eine Liste von IP/CIDR-Strings sein."
@@ -775,6 +788,135 @@ def build_proxy_v1_header(
 
 def build_proxy_unknown_header() -> bytes:
     return b"PROXY UNKNOWN\r\n"
+
+
+def parse_proxy_v2_header(data: bytes) -> ProxyProtocolInfo:
+    if len(data) < 16:
+        raise ValueError("PROXY v2 header too short")
+    if len(data) > MAX_PROXY_V2_HEADER_BYTES:
+        raise ValueError("PROXY v2 header too long")
+    if data[:12] != PROXY_V2_SIGNATURE:
+        raise ValueError("Invalid PROXY v2 signature")
+    ver_cmd = data[12]
+    if (ver_cmd >> 4) != 0x2:
+        raise ValueError("Invalid PROXY v2 version")
+    command = ver_cmd & 0x0F
+    if command not in {0x0, 0x1}:
+        raise ValueError("Invalid PROXY v2 command")
+    fam_proto = data[13]
+    addr_len = int.from_bytes(data[14:16], "big")
+    if len(data) != 16 + addr_len:
+        raise ValueError("Invalid PROXY v2 length")
+    if command == 0x0:
+        return ProxyProtocolInfo("0.0.0.0", "0.0.0.0", 0, 0, "UNKNOWN")
+    if fam_proto == 0x00:
+        return ProxyProtocolInfo("0.0.0.0", "0.0.0.0", 0, 0, "UNKNOWN")
+    fam = fam_proto >> 4
+    proto = fam_proto & 0x0F
+    if proto != 0x1:
+        raise ValueError("Only STREAM/TCP is supported for PROXY v2")
+    payload = data[16:]
+    if fam == 0x1:
+        if addr_len < 12:
+            raise ValueError("Invalid PROXY v2 TCP4 address length (min 12)")
+        src = str(ipaddress.IPv4Address(payload[0:4]))
+        dst = str(ipaddress.IPv4Address(payload[4:8]))
+        src_port, dst_port = struct.unpack("!HH", payload[8:12])
+        family = "TCP4"
+    elif fam == 0x2:
+        if addr_len < 36:
+            raise ValueError("Invalid PROXY v2 TCP6 address length (min 36)")
+        src = str(ipaddress.IPv6Address(payload[0:16]))
+        dst = str(ipaddress.IPv6Address(payload[16:32]))
+        src_port, dst_port = struct.unpack("!HH", payload[32:36])
+        family = "TCP6"
+    elif fam == 0x0:
+        return ProxyProtocolInfo("0.0.0.0", "0.0.0.0", 0, 0, "UNKNOWN")
+    else:
+        raise ValueError("Unsupported PROXY v2 address family")
+    if not (1 <= src_port <= 65535 and 1 <= dst_port <= 65535):
+        raise ValueError("Invalid ports in PROXY v2 header")
+    return ProxyProtocolInfo(src, dst, src_port, dst_port, family)
+
+
+async def read_proxy_v2_header(reader: asyncio.StreamReader, timeout: float) -> ProxyProtocolInfo:
+    base = await asyncio.wait_for(reader.readexactly(16), timeout=timeout)
+    if base[:12] != PROXY_V2_SIGNATURE:
+        raise ValueError("Invalid PROXY v2 signature")
+    addr_len = int.from_bytes(base[14:16], "big")
+    total_len = 16 + addr_len
+    if total_len > MAX_PROXY_V2_HEADER_BYTES:
+        raise ValueError("PROXY v2 header too long")
+    payload = b""
+    if addr_len:
+        payload = await asyncio.wait_for(reader.readexactly(addr_len), timeout=timeout)
+    return parse_proxy_v2_header(base + payload)
+
+
+def build_proxy_v2_unknown_header() -> bytes:
+    return PROXY_V2_SIGNATURE + bytes([0x20, 0x00]) + b"\x00\x00"
+
+
+def build_proxy_v2_header(
+    source_ip: str, destination_ip: str, source_port: int, destination_port: int
+) -> bytes:
+    src = ipaddress.ip_address(source_ip)
+    dst = ipaddress.ip_address(destination_ip)
+    if src.version != dst.version:
+        raise ValueError("source_ip and destination_ip must use same family")
+    if not (1 <= source_port <= 65535 and 1 <= destination_port <= 65535):
+        raise ValueError("Ports must be in range 1..65535")
+    if src.version == 4:
+        fam_proto = 0x11
+        addr = src.packed + dst.packed + struct.pack("!HH", source_port, destination_port)
+    else:
+        fam_proto = 0x21
+        addr = src.packed + dst.packed + struct.pack("!HH", source_port, destination_port)
+    return PROXY_V2_SIGNATURE + bytes([0x21, fam_proto]) + struct.pack("!H", len(addr)) + addr
+
+
+def build_proxy_unknown_header_for_version(version: int) -> bytes:
+    if version == 1:
+        return build_proxy_unknown_header()
+    if version == 2:
+        return build_proxy_v2_unknown_header()
+    raise ValueError(f"Unsupported PROXY protocol version: {version}")
+
+
+def build_proxy_header_for_version(
+    version: int, source_ip: str, destination_ip: str, source_port: int, destination_port: int
+) -> bytes:
+    if version == 1:
+        return build_proxy_v1_header(source_ip, destination_ip, source_port, destination_port)
+    if version == 2:
+        return build_proxy_v2_header(source_ip, destination_ip, source_port, destination_port)
+    raise ValueError(f"Unsupported PROXY protocol version: {version}")
+
+
+async def read_proxy_header_for_version(
+    version: int, reader: asyncio.StreamReader, timeout: float
+) -> ProxyProtocolInfo:
+    if version == 1:
+        return await read_proxy_v1_header(reader, timeout)
+    if version == 2:
+        return await read_proxy_v2_header(reader, timeout)
+    raise ValueError(f"Unsupported PROXY protocol version: {version}")
+
+
+def effective_proxy_accept_version(config: AppConfig) -> int:
+    return (
+        config.proxy_protocol.accept_version
+        if config.proxy_protocol.accept_version is not None
+        else config.proxy_protocol.version
+    )
+
+
+def effective_proxy_send_version(config: AppConfig) -> int:
+    return (
+        config.proxy_protocol.send_version
+        if config.proxy_protocol.send_version is not None
+        else config.proxy_protocol.version
+    )
 
 
 async def tcp_health_check(host: str, port: int, timeout: float) -> HealthCheckResult:
@@ -1118,9 +1260,11 @@ async def handle_client(
                 log.warning("PROXY protocol rejected from untrusted peer %s", peer_ip)
                 return
             try:
-                inbound_proxy_info = await read_proxy_v1_header(
-                    client_reader, config.connection.timeout_seconds
+                accept_version = effective_proxy_accept_version(config)
+                inbound_proxy_info = await read_proxy_header_for_version(
+                    accept_version, client_reader, config.connection.timeout_seconds
                 )
+                log.debug("Accepted PROXY protocol v%s from %s", accept_version, peer)
             except Exception as exc:
                 log.warning(
                     "PROXY protocol header invalid from %s: %s", peer, exc.__class__.__name__
@@ -1179,6 +1323,7 @@ async def handle_client(
         if config.proxy_protocol.send:
             backend_peer = server_writer.get_extra_info("peername")
             try:
+                send_version = effective_proxy_send_version(config)
                 backend_ip = (
                     backend_peer[0] if isinstance(backend_peer, tuple) and backend_peer else None
                 )
@@ -1197,11 +1342,13 @@ async def handle_client(
                     src_port = peer_port
                 if not backend_ip or not backend_port:
                     log.warning("Backend peername ungültig, sende PROXY UNKNOWN zu %s", target.name)
-                    server_writer.write(build_proxy_unknown_header())
+                    server_writer.write(build_proxy_unknown_header_for_version(send_version))
                 else:
                     try:
                         server_writer.write(
-                            build_proxy_v1_header(src_ip, backend_ip, src_port, backend_port)
+                            build_proxy_header_for_version(
+                                send_version, src_ip, backend_ip, src_port, backend_port
+                            )
                         )
                     except ValueError as exc:
                         log.warning(
@@ -1209,7 +1356,8 @@ async def handle_client(
                             exc,
                             target.name,
                         )
-                        server_writer.write(build_proxy_unknown_header())
+                        server_writer.write(build_proxy_unknown_header_for_version(send_version))
+                log.debug("Sent PROXY protocol v%s to backend %s", send_version, target.name)
                 await server_writer.drain()
             except Exception as exc:
                 log.error("Senden von PROXY protocol fehlgeschlagen: %s", exc)
@@ -1632,6 +1780,11 @@ async def run() -> int:
         return cli_result
 
     setup_logging(config.logging.level)
+    if config.proxy_protocol.accept and not config.proxy_protocol.trusted_proxy_ips:
+        log.warning(
+            "proxy_protocol.accept=true with empty trusted_proxy_ips trusts every peer. "
+            "This is unsafe on public listeners."
+        )
     health = HealthState(
         config.healthcheck.fail_after,
         config.healthcheck.recover_after,
