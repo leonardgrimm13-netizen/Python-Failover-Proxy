@@ -498,6 +498,9 @@ You should now see `active_target="FALLBACK"` and `routing_reason="force_fallbac
 This proxy supports **PROXY protocol v1 and v2**. It can optionally accept a PROXY header from a trusted downstream proxy and/or send a PROXY header to upstream servers.
 
 ⚠️ Security warning: Never enable `accept=true` for untrusted Internet clients. Restrict access and set `trusted_proxy_ips`.
+If `trusted_proxy_ips = []`, every direct peer is trusted to send a PROXY header. This is only safe on non-public listeners (for example `127.0.0.1` or private Tailscale/VPN IPs).
+`accept_version` and `send_version` are optional overrides and take precedence over `version`.
+Only set them if you intentionally want different versions per direction.
 
 Example 1 (accept only):
 ```toml

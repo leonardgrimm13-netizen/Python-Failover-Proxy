@@ -499,6 +499,10 @@ Wenn du auf einem VPS arbeitest, lasse `listen_host` am besten auf `127.0.0.1` u
 Dieser Proxy unterstützt **PROXY protocol v1 und v2**. Optional kann er PROXY-Header von einem vertrauenswürdigen Downstream-Proxy annehmen und/oder an Upstream-Server weitergeben.
 
 ⚠️ Sicherheitswarnung: `accept=true` niemals für untrusted Internet-Clients aktivieren. Zugriff einschränken und `trusted_proxy_ips` setzen.
+Wenn `trusted_proxy_ips = []`, gilt jeder direkte Peer als vertrauenswürdig für PROXY-Header.
+Das ist nur sicher bei nicht-öffentlichen Listenern (z. B. `127.0.0.1` oder private Tailscale/VPN-IP).
+`accept_version` und `send_version` sind optionale Overrides und überschreiben `version`.
+Setze sie nur, wenn du absichtlich unterschiedliche Versionen pro Richtung willst.
 
 Beispiel 1 (nur akzeptieren):
 ```toml

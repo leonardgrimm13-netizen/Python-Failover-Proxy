@@ -105,9 +105,10 @@ level = "INFO"
 # send=true only if the upstream server expects PROXY protocol.
 # version: compatibility default for accept/send (1 or 2).
 # accept_version/send_version override version per direction (optional).
+# Only set accept_version/send_version if you intentionally want different versions per direction.
 accept = false
 send = false
 version = 1
-accept_version = 1
-send_version = 1
+# accept_version = 2
+# send_version = 2
 trusted_proxy_ips = []

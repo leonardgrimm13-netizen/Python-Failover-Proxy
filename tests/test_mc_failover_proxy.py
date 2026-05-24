@@ -1747,6 +1747,227 @@ class RuntimeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         srv.close()
         await srv.wait_closed()
 
+    async def test_proxy_protocol_v2_accept_consumes_header(self):
+        got = bytearray()
+
+        async def backend(reader, writer):
+            got.extend(await reader.read(1024))
+            await m.close_writer(writer)
+
+        srv = await asyncio.start_server(backend, "127.0.0.1", 0)
+        port = srv.sockets[0].getsockname()[1]
+        cfg = self.make_config(
+            port,
+            port,
+            max_connections=10,
+            proxy_protocol=m.ProxyProtocolConfig(True, False, 2, None, None, ("127.0.0.1",)),
+        )
+        health = m.HealthState(1, 1)
+        health.set_initial_state(True)
+        limiter = m.ConnectionLimiter(10)
+        proxy = await asyncio.start_server(
+            lambda cr, cw: m.handle_client(
+                cfg, health, limiter, m.RuntimeState(started_at=0.0), cr, cw
+            ),
+            "127.0.0.1",
+            0,
+        )
+        pport = proxy.sockets[0].getsockname()[1]
+        r, w = await asyncio.open_connection("127.0.0.1", pport)
+        w.write(m.build_proxy_v2_header("203.0.113.10", "127.0.0.1", 54321, 25565) + b"HELLO")
+        await w.drain()
+        await asyncio.sleep(0.2)
+        self.assertEqual(bytes(got), b"HELLO")
+        await m.close_writer(w)
+        await r.read(1)
+        proxy.close()
+        await proxy.wait_closed()
+        srv.close()
+        await srv.wait_closed()
+
+    async def test_proxy_protocol_v2_send_writes_binary_header_before_payload(self):
+        got = bytearray()
+        done = asyncio.Event()
+
+        async def backend(reader, writer):
+            got.extend(await read_until_contains(reader, b"HELLO", timeout=2.0))
+            done.set()
+            await m.close_writer(writer)
+
+        srv = await asyncio.start_server(backend, "127.0.0.1", 0)
+        port = srv.sockets[0].getsockname()[1]
+        cfg = self.make_config(
+            port,
+            port,
+            max_connections=10,
+            proxy_protocol=m.ProxyProtocolConfig(False, True, 2, None, None, ()),
+        )
+        health = m.HealthState(1, 1)
+        health.set_initial_state(True)
+        limiter = m.ConnectionLimiter(10)
+        state = m.RuntimeState(started_at=0.0)
+        proxy = await asyncio.start_server(
+            lambda cr, cw: m.handle_client(cfg, health, limiter, state, cr, cw), "127.0.0.1", 0
+        )
+        pport = proxy.sockets[0].getsockname()[1]
+        r, w = await asyncio.open_connection("127.0.0.1", pport)
+        w.write(b"HELLO")
+        await w.drain()
+        await asyncio.wait_for(done.wait(), timeout=2.5)
+        data = bytes(got)
+        self.assertTrue(data.startswith(m.PROXY_V2_SIGNATURE))
+        addr_len = int.from_bytes(data[14:16], "big")
+        header_bytes = data[: 16 + addr_len]
+        payload = data[16 + addr_len :]
+        parsed = m.parse_proxy_v2_header(header_bytes)
+        self.assertEqual(parsed.family, "TCP4")
+        self.assertEqual(payload, b"HELLO")
+        await m.close_writer(w)
+        await r.read(1)
+        proxy.close()
+        await proxy.wait_closed()
+        srv.close()
+        await srv.wait_closed()
+
+    async def test_proxy_protocol_v2_accept_and_send_uses_client_ip_from_inbound_header(self):
+        got = bytearray()
+        done = asyncio.Event()
+
+        async def backend(reader, writer):
+            got.extend(await read_until_contains(reader, b"HELLO", timeout=2.0))
+            done.set()
+            await m.close_writer(writer)
+
+        srv = await asyncio.start_server(backend, "127.0.0.1", 0)
+        port = srv.sockets[0].getsockname()[1]
+        cfg = self.make_config(
+            port,
+            port,
+            max_connections=10,
+            proxy_protocol=m.ProxyProtocolConfig(True, True, 2, None, None, ("127.0.0.1",)),
+        )
+        health = m.HealthState(1, 1)
+        health.set_initial_state(True)
+        limiter = m.ConnectionLimiter(10)
+        proxy = await asyncio.start_server(
+            lambda cr, cw: m.handle_client(
+                cfg, health, limiter, m.RuntimeState(started_at=0.0), cr, cw
+            ),
+            "127.0.0.1",
+            0,
+        )
+        pport = proxy.sockets[0].getsockname()[1]
+        r, w = await asyncio.open_connection("127.0.0.1", pport)
+        w.write(m.build_proxy_v2_header("203.0.113.10", "127.0.0.1", 54321, 25565) + b"HELLO")
+        await w.drain()
+        await asyncio.wait_for(done.wait(), timeout=2.5)
+        data = bytes(got)
+        addr_len = int.from_bytes(data[14:16], "big")
+        header_bytes = data[: 16 + addr_len]
+        payload = data[16 + addr_len :]
+        parsed = m.parse_proxy_v2_header(header_bytes)
+        self.assertEqual(parsed.source_ip, "203.0.113.10")
+        self.assertEqual(parsed.source_port, 54321)
+        self.assertEqual(parsed.family, "TCP4")
+        self.assertEqual(payload, b"HELLO")
+        await m.close_writer(w)
+        await r.read(1)
+        proxy.close()
+        await proxy.wait_closed()
+        srv.close()
+        await srv.wait_closed()
+
+    async def test_proxy_protocol_accept_v2_send_v1_bridge(self):
+        got = bytearray()
+        done = asyncio.Event()
+
+        async def backend(reader, writer):
+            got.extend(await read_until_contains(reader, b"HELLO", timeout=2.0))
+            done.set()
+            await m.close_writer(writer)
+
+        srv = await asyncio.start_server(backend, "127.0.0.1", 0)
+        port = srv.sockets[0].getsockname()[1]
+        cfg = self.make_config(
+            port,
+            port,
+            max_connections=10,
+            proxy_protocol=m.ProxyProtocolConfig(True, True, 2, 2, 1, ("127.0.0.1",)),
+        )
+        health = m.HealthState(1, 1)
+        health.set_initial_state(True)
+        limiter = m.ConnectionLimiter(10)
+        proxy = await asyncio.start_server(
+            lambda cr, cw: m.handle_client(
+                cfg, health, limiter, m.RuntimeState(started_at=0.0), cr, cw
+            ),
+            "127.0.0.1",
+            0,
+        )
+        pport = proxy.sockets[0].getsockname()[1]
+        r, w = await asyncio.open_connection("127.0.0.1", pport)
+        w.write(m.build_proxy_v2_header("203.0.113.10", "127.0.0.1", 54321, 25565) + b"HELLO")
+        await w.drain()
+        await asyncio.wait_for(done.wait(), timeout=2.5)
+        data = bytes(got)
+        v1_header, payload = data.split(b"\r\n", 1)
+        self.assertTrue(v1_header.startswith(b"PROXY TCP4 203.0.113.10 "))
+        self.assertEqual(payload, b"HELLO")
+        await m.close_writer(w)
+        await r.read(1)
+        proxy.close()
+        await proxy.wait_closed()
+        srv.close()
+        await srv.wait_closed()
+
+    async def test_proxy_protocol_accept_v1_send_v2_bridge(self):
+        got = bytearray()
+        done = asyncio.Event()
+
+        async def backend(reader, writer):
+            got.extend(await read_until_contains(reader, b"HELLO", timeout=2.0))
+            done.set()
+            await m.close_writer(writer)
+
+        srv = await asyncio.start_server(backend, "127.0.0.1", 0)
+        port = srv.sockets[0].getsockname()[1]
+        cfg = self.make_config(
+            port,
+            port,
+            max_connections=10,
+            proxy_protocol=m.ProxyProtocolConfig(True, True, 1, 1, 2, ("127.0.0.1",)),
+        )
+        health = m.HealthState(1, 1)
+        health.set_initial_state(True)
+        limiter = m.ConnectionLimiter(10)
+        proxy = await asyncio.start_server(
+            lambda cr, cw: m.handle_client(
+                cfg, health, limiter, m.RuntimeState(started_at=0.0), cr, cw
+            ),
+            "127.0.0.1",
+            0,
+        )
+        pport = proxy.sockets[0].getsockname()[1]
+        r, w = await asyncio.open_connection("127.0.0.1", pport)
+        w.write(b"PROXY TCP4 203.0.113.10 127.0.0.1 54321 25565\r\nHELLO")
+        await w.drain()
+        await asyncio.wait_for(done.wait(), timeout=2.5)
+        data = bytes(got)
+        self.assertTrue(data.startswith(m.PROXY_V2_SIGNATURE))
+        addr_len = int.from_bytes(data[14:16], "big")
+        header_bytes = data[: 16 + addr_len]
+        payload = data[16 + addr_len :]
+        parsed = m.parse_proxy_v2_header(header_bytes)
+        self.assertEqual(parsed.source_ip, "203.0.113.10")
+        self.assertEqual(parsed.family, "TCP4")
+        self.assertEqual(payload, b"HELLO")
+        await m.close_writer(w)
+        await r.read(1)
+        proxy.close()
+        await proxy.wait_closed()
+        srv.close()
+        await srv.wait_closed()
+
 
 class MonitoringTests(unittest.IsolatedAsyncioTestCase):
     def _monitoring_config(
